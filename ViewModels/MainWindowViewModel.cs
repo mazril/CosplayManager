@@ -1105,7 +1105,6 @@ namespace CosplayManager.ViewModels
                             {
                                 long sourceResC = (long)sourceMetaConflict.Width * sourceMetaConflict.Height;
                                 long targetResC = (long)targetMetaConflict.Width * targetMetaConflict.Height;
-                                // Pobieramy rozmiary plików bezpośrednio, na wypadek gdyby metadane były niekompletne
                                 long sourceSizeC = new FileInfo(sourceMetaConflict.FilePath).Length;
                                 long targetSizeC = new FileInfo(targetMetaConflict.FilePath).Length;
 
@@ -1126,18 +1125,14 @@ namespace CosplayManager.ViewModels
                             }
                             else
                             {
-                                // Brak wystarczających metadanych wymiarów do porównania rozdzielczości.
-                                // Porównaj na podstawie samego rozmiaru pliku na dysku.
                                 SimpleFileLogger.Log($"{logPrefixConflict}: Brak metadanych wymiarów do pełnego porównania. Porównywanie na podstawie rozmiaru pliku.");
                                 try
                                 {
                                     if (!File.Exists(finalTargetPathForOperation))
                                     {
-                                        // Sytuacja nieoczekiwana, jeśli TargetImage był ustawiony, a plik nie istnieje.
-                                        // Traktujemy jakby źródło było "lepsze" bo docelowy nie istnieje, więc kopiujemy.
-                                        SimpleFileLogger.LogWarning($"{logPrefixConflict}: Plik docelowy '{finalTargetPathForOperation}' wskazany w TargetImage nie istnieje na dysku! Kopiowanie źródła.");
+                                        SimpleFileLogger.LogWarning($"{logPrefixConflict}: Plik docelowy '{finalTargetPathForOperation}' wskazany w TargetImage nie istnieje na dysku! Kopiowanie źródła jako nowy.");
                                         GC.Collect(); GC.WaitForPendingFinalizers(); await Task.Delay(100);
-                                        File.Copy(sourceFilePath, finalTargetPathForOperation, false); // Kopiuj jako nowy, bo docelowy "zniknął"
+                                        File.Copy(sourceFilePath, finalTargetPathForOperation, false);
                                         operationOnFileSuccessful = true;
                                     }
                                     else
@@ -1156,14 +1151,14 @@ namespace CosplayManager.ViewModels
                                         {
                                             SimpleFileLogger.Log($"{logPrefixConflict}: Źródło nie jest większe (rozmiar pliku: {sourceSizeFallback} <= {targetSizeFallback}). Istniejący plik '{finalTargetPathForOperation}' pozostaje. Źródło zostanie usunięte.");
                                             operationOnFileSuccessful = true;
-                                            skippedDueToQualityCount++; // Można uznać za decyzję jakościową opartą na rozmiarze
+                                            skippedDueToQualityCount++;
                                         }
                                     }
                                 }
                                 catch (Exception fileSizeEx)
                                 {
                                     SimpleFileLogger.LogError($"{logPrefixConflict}: Błąd podczas porównywania rozmiarów plików. Zachowuję ostrożność - istniejący plik '{finalTargetPathForOperation}' pozostaje. Źródło zostanie usunięte.", fileSizeEx);
-                                    operationOnFileSuccessful = true; // Decyzja podjęta (zachowaj istniejący)
+                                    operationOnFileSuccessful = true;
                                     otherSkippedCount++;
                                 }
                             }
