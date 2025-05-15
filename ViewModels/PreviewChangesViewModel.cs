@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows.Input;
+using CosplayManager.Models; // Potrzebne dla ProposedMove
 
 namespace CosplayManager.ViewModels
 {
@@ -36,15 +37,6 @@ namespace CosplayManager.ViewModels
         public ICommand RefreshCommand { get; }
 
         private readonly List<Models.ProposedMove> _initialProposedMoves;
-        // Pole _approvedMovesForProcessing nie jest już tutaj potrzebne,
-        // GetApprovedMoves będzie budować listę dynamicznie z ProposedMovesList.
-        // Jednakże, skoro PrepareToClose() w code-behind czyści ItemsSource i DataContext,
-        // GetApprovedMoves musi być wywołane w MainWindowViewModel PO ShowDialog()
-        // ale PRZED tym jak UI zostanie zniszczone. To jest delikatne.
-
-        // Bezpieczniejsze podejście: GetApprovedMoves buduje listę z ProposedMovesList
-        // tak jak było, a MainWindowViewModel wywołuje je PO zamknięciu okna.
-        // Czyszczenie UI w PrepareToClose() powinno wystarczyć do zwolnienia zasobów.
 
         public PreviewChangesViewModel(List<Models.ProposedMove> initialProposedMoves, double initialThreshold)
         {
@@ -66,9 +58,10 @@ namespace CosplayManager.ViewModels
             {
                 foreach (var move in moves)
                 {
-                    var vm = new ProposedMoveViewModel(move.SourceImage, move.TargetImage, move.ProposedTargetPath, move.Similarity)
+                    // Używamy nowego konstruktora ProposedMoveViewModel, przekazując cały obiekt 'move'
+                    var vm = new ProposedMoveViewModel(move)
                     {
-                        IsApprovedForMove = true
+                        IsApprovedForMove = true // Domyślnie zatwierdzone
                     };
                     ProposedMovesList.Add(vm);
                 }
@@ -89,22 +82,23 @@ namespace CosplayManager.ViewModels
             return ProposedMovesList.Any(p => p.IsApprovedForMove);
         }
 
+        // ZAKTUALIZOWANA METODA GetApprovedMoves
         public List<Models.ProposedMove> GetApprovedMoves()
         {
-            // Ta metoda jest wywoływana przez MainWindowViewModel PO tym, jak ShowDialog() się zakończy.
-            // W tym momencie UI okna PreviewChangesWindow mogło już zostać zniszczone lub jest w trakcie.
-            // Ale ViewModel (ten obiekt) nadal powinien istnieć i mieć dane.
             var approvedRawMoves = new List<Models.ProposedMove>();
-            if (ProposedMovesList != null) // Dodatkowe sprawdzenie
+            if (ProposedMovesList != null)
             {
                 foreach (var vm in ProposedMovesList.Where(p => p.IsApprovedForMove))
                 {
+                    // Tworzymy nowy obiekt Models.ProposedMove, tym razem poprawnie kopiując WSZYSTKIE potrzebne pola
                     approvedRawMoves.Add(new Models.ProposedMove
                     {
                         SourceImage = vm.SourceImage,
                         TargetImage = vm.TargetImage,
                         ProposedTargetPath = vm.ProposedTargetPath,
-                        Similarity = vm.Similarity
+                        Similarity = vm.Similarity,
+                        Action = vm.Action, // Kopiujemy Action
+                        TargetCategoryProfileName = vm.TargetCategoryProfileName // Kopiujemy TargetCategoryProfileName
                     });
                 }
             }
@@ -118,8 +112,6 @@ namespace CosplayManager.ViewModels
         private void OnConfirm()
         {
             SimpleFileLogger.Log("PreviewChangesViewModel: Confirm button clicked. ViewModel przekaże 'true' do CloseAction.");
-            // Nie ma potrzeby czyszczenia ProposedMovesList tutaj. To zrobi PrepareToClose() w oknie.
-            // Metoda GetApprovedMoves zostanie wywołana przez MainWindowViewModel po zamknięciu okna.
             CloseAction?.Invoke(true);
         }
 

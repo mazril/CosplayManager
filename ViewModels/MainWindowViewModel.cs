@@ -1039,7 +1039,7 @@ namespace CosplayManager.ViewModels
             {
                 string sourceFilePath = move.SourceImage.FilePath;
                 string finalTargetPathForOperation = move.ProposedTargetPath;
-                ProposedMoveActionType action = move.Action;
+                ProposedMoveActionType action = move.Action; // Teraz ta wartość powinna być poprawna
                 bool operationOnFileSuccessful = false;
                 bool sourceFileToDelete = false;
 
