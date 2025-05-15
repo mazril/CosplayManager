@@ -11,7 +11,6 @@ namespace CosplayManager.ViewModels
 {
     public class ProposedMoveViewModel : ObservableObject
     {
-        // ... (istniejące właściwości bez zmian: SourceImage, TargetImage, ProposedTargetPath, Similarity, IsApprovedForMove) ...
         private ImageFileEntry _sourceImage;
         public ImageFileEntry SourceImage
         {
@@ -47,6 +46,22 @@ namespace CosplayManager.ViewModels
             set => SetProperty(ref _isApprovedForMove, value);
         }
 
+        // NOWE WŁAŚCIWOŚCI
+        private ProposedMoveActionType _action;
+        public ProposedMoveActionType Action
+        {
+            get => _action;
+            set => SetProperty(ref _action, value);
+        }
+
+        private string _targetCategoryProfileName;
+        public string TargetCategoryProfileName
+        {
+            get => _targetCategoryProfileName;
+            set => SetProperty(ref _targetCategoryProfileName, value);
+        }
+        // KONIEC NOWYCH WŁAŚCIWOŚCI
+
         private BitmapImage? _sourceThumbnail;
         public BitmapImage? SourceThumbnail
         {
@@ -68,16 +83,36 @@ namespace CosplayManager.ViewModels
             private set => SetProperty(ref _isLoadingThumbnails, value);
         }
 
-        public ProposedMoveViewModel(ImageFileEntry source, ImageFileEntry? target, string proposedPath, double similarity)
+        // ZAKTUALIZOWANY KONSTRUKTOR
+        public ProposedMoveViewModel(Models.ProposedMove modelMove) // Zmieniono parametr na obiekt ProposedMove
         {
-            _sourceImage = source;
-            _targetImage = target;
-            _proposedTargetPath = proposedPath;
-            _similarity = similarity;
-            _isApprovedForMove = true;
+            _sourceImage = modelMove.SourceImage;
+            _targetImage = modelMove.TargetImage;
+            _proposedTargetPath = modelMove.ProposedTargetPath;
+            _similarity = modelMove.Similarity;
+            _isApprovedForMove = true; // Domyślnie zaznaczone do wykonania
+
+            // Ustawienie nowych właściwości
+            _action = modelMove.Action;
+            _targetCategoryProfileName = modelMove.TargetCategoryProfileName;
 
             _ = LoadThumbnailsAsync();
         }
+
+        // Stary konstruktor - można go usunąć lub zostawić jeśli jest gdzieś używany, ale główny przepływ powinien używać nowego
+        // public ProposedMoveViewModel(ImageFileEntry source, ImageFileEntry? target, string proposedPath, double similarity)
+        // {
+        //     _sourceImage = source;
+        //     _targetImage = target;
+        //     _proposedTargetPath = proposedPath;
+        //     _similarity = similarity;
+        //     _isApprovedForMove = true;
+        //     // Domyślne wartości dla nowych pól, jeśli ten konstruktor jest nadal potrzebny
+        //     _action = ProposedMoveActionType.CopyNew; // lub inna sensowna domyślna
+        //     _targetCategoryProfileName = string.Empty; 
+        //     _ = LoadThumbnailsAsync();
+        // }
+
 
         private async Task LoadThumbnailsAsync()
         {
@@ -132,15 +167,11 @@ namespace CosplayManager.ViewModels
             });
         }
 
-        // *** NOWA METODA PUBLICZNA ***
         public void ReleaseThumbnails()
         {
             SimpleFileLogger.Log($"Releasing thumbnails for Source: {SourceImage?.FileName}, Target: {TargetImage?.FileName}");
             SourceThumbnail = null;
             TargetThumbnail = null;
-            // Dodatkowe GC.Collect() tutaj może być zbyt agresywne, ale jest opcją, jeśli problem nadal występuje.
-            // GC.Collect();
-            // GC.WaitForPendingFinalizers();
         }
     }
 }
