@@ -1136,7 +1136,7 @@ namespace CosplayManager.ViewModels
 
                         if (sourceFileToDelete)
                         {
-                            bool deleteOk = false;
+                            bool deleteOk = false; 
                             for (int i = 0; i < 3; i++) // Próby usunięcia
                             {
                                 try { if (i > 0) await Task.Delay(200 * (i + 1)); File.Delete(sourceFilePath); deleteOk = true; break; }
