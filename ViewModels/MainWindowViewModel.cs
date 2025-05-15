@@ -2,7 +2,7 @@
 using CosplayManager.Models;
 using CosplayManager.Services;
 using CosplayManager.ViewModels.Base;
-using CosplayManager.Views; // Potrzebne dla SplitProfileWindow
+using CosplayManager.Views;
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
@@ -12,7 +12,6 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
-// using Ookii.Dialogs.Wpf; // Odkomentuj, jeśli używasz
 
 namespace CosplayManager.ViewModels
 {
@@ -49,7 +48,7 @@ namespace CosplayManager.ViewModels
                     OnPropertyChanged(nameof(IsProfileSelected));
                     (RemoveProfileCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (CheckCharacterSuggestionsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
-                    (OpenSplitProfileDialogCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged(); // Odśwież dla nowej komendy
+                    (OpenSplitProfileDialogCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 }
                 if (_selectedProfile == null && oldSelectedProfileName != null &&
                     !_profileService.GetAllProfiles().Any(p => p.CategoryName == oldSelectedProfileName))
@@ -400,13 +399,40 @@ namespace CosplayManager.ViewModels
                    !string.IsNullOrWhiteSpace(SourceFolderNamesInput) &&
                    profile.CentroidEmbedding != null;
         }
+
+        // ZMODYFIKOWANE CanExecuteMatchModelSpecific z logowaniem
         private bool CanExecuteMatchModelSpecific(object? parameter)
         {
-            if (!(parameter is ModelDisplayViewModel modelVM)) return false;
-            return !string.IsNullOrWhiteSpace(LibraryRootPath) &&
-                   Directory.Exists(LibraryRootPath) &&
-                   modelVM.HasCharacterProfiles &&
-                   !string.IsNullOrWhiteSpace(SourceFolderNamesInput);
+            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Sprawdzanie warunków...");
+            if (!(parameter is ModelDisplayViewModel modelVM))
+            {
+                SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Parametr nie jest ModelDisplayViewModel. Wynik: false");
+                return false;
+            }
+            SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: Parametr OK, Modelka: {modelVM.ModelName}");
+
+            if (string.IsNullOrWhiteSpace(LibraryRootPath) || !Directory.Exists(LibraryRootPath))
+            {
+                SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: LibraryRootPath niepoprawny ('{LibraryRootPath}'). Wynik: false");
+                return false;
+            }
+            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: LibraryRootPath OK.");
+
+            if (!modelVM.HasCharacterProfiles)
+            {
+                SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: Modelka '{modelVM.ModelName}' nie ma profili postaci (HasCharacterProfiles: {modelVM.HasCharacterProfiles}). Wynik: false");
+                return false;
+            }
+            SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: Modelka '{modelVM.ModelName}' ma profile postaci.");
+
+            if (string.IsNullOrWhiteSpace(SourceFolderNamesInput))
+            {
+                SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: SourceFolderNamesInput jest pusty ('{SourceFolderNamesInput}'). Wynik: false");
+                return false;
+            }
+            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: SourceFolderNamesInput OK.");
+            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Wszystkie warunki spełnione. Wynik: true");
+            return true;
         }
         private bool CanExecuteRemoveModelTree(object? parameter) => parameter is ModelDisplayViewModel;
 
@@ -847,43 +873,77 @@ namespace CosplayManager.ViewModels
             return new Models.ProposedMove(sourceImageEntry, finalTargetImageForDisplay, finalProposedTargetPath, displaySimilarity, suggestedProfileData.CategoryName, actionType);
         }
 
+        // ZMODYFIKOWANA METODA ExecuteMatchModelSpecificAsync z rozbudowanym logowaniem
         private async Task ExecuteMatchModelSpecificAsync(object? parameter)
         {
             SimpleFileLogger.Log("ExecuteMatchModelSpecificAsync: Rozpoczęto wykonanie.");
-            if (!(parameter is ModelDisplayViewModel modelVM)) { SimpleFileLogger.LogWarning("ExecuteMatchModelSpecificAsync: Parametr nie jest ModelDisplayViewModel."); return; }
+            if (!(parameter is ModelDisplayViewModel modelVM))
+            {
+                SimpleFileLogger.LogWarning("ExecuteMatchModelSpecificAsync: Parametr nie jest ModelDisplayViewModel. Komenda nie zostanie wykonana.");
+                StatusMessage = "Błąd: Nie wybrano modelki do analizy.";
+                return;
+            }
+            SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Przetwarzanie dla modelki: {modelVM.ModelName}");
+
+            if (!CanExecuteMatchModelSpecific(modelVM)) // Sprawdź warunki wykonania
+            {
+                SimpleFileLogger.LogWarning($"ExecuteMatchModelSpecificAsync: Warunek CanExecuteMatchModelSpecific zwrócił false dla modelki {modelVM.ModelName}. Szczegóły w poprzednich logach CanExecute.");
+                StatusMessage = $"Nie można uruchomić dopasowania dla {modelVM.ModelName} - sprawdź konfigurację.";
+                // Można też pokazać MessageBox, jeśli to bardziej przyjazne użytkownikowi
+                MessageBox.Show($"Nie można uruchomić dopasowania dla '{modelVM.ModelName}'.\nSprawdź, czy:\n- Ścieżka biblioteki jest poprawna.\n- Modelka ma zdefiniowane profile postaci.\n- Zdefiniowano nazwy folderów źródłowych (Mix).", "Nie można wykonać", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
 
             var configuredMixedFolderNames = new HashSet<string>(
                 SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
                                      .Select(name => name.Trim()),
                 StringComparer.OrdinalIgnoreCase);
 
+            // Sprawdzenie `configuredMixedFolderNames.Any()` jest już w CanExecute, ale dla pewności
             if (!configuredMixedFolderNames.Any())
             {
+                SimpleFileLogger.LogWarning("ExecuteMatchModelSpecificAsync: Brak zdefiniowanych folderów źródłowych (Mix).");
                 MessageBox.Show("Zdefiniuj nazwy folderów źródłowych (np. Mix, Unsorted) w ustawieniach zaawansowanych.", "Brak folderów źródłowych", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
+            SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Skonfigurowane foldery Mix: {string.Join(", ", configuredMixedFolderNames)}");
+
 
             StatusMessage = $"Obliczanie sugestii dla modelki: {modelVM.ModelName}...";
             var currentModelProposedMoves = new List<Models.ProposedMove>();
             string modelDirectoryPath = Path.Combine(LibraryRootPath, modelVM.ModelName);
-            if (!Directory.Exists(modelDirectoryPath))
+
+            if (!Directory.Exists(modelDirectoryPath)) // To jest już w CanExecute, ale dla bezpieczeństwa
             {
+                SimpleFileLogger.LogError($"ExecuteMatchModelSpecificAsync: Folder modelki '{modelVM.ModelName}' ('{modelDirectoryPath}') nie istnieje.", null);
                 MessageBox.Show($"Folder modelki '{modelVM.ModelName}' ('{modelDirectoryPath}') nie istnieje.", "Błąd ścieżki", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
+            SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Ścieżka do folderu modelki: {modelDirectoryPath}");
+
 
             modelVM.PendingSuggestionsCount = 0;
             foreach (var charProfile in modelVM.CharacterProfiles) charProfile.PendingSuggestionsCount = 0;
+
+            int imagesFoundInMixFolders = 0;
+            int imagesWithEmbeddings = 0;
+            int suggestionsMade = 0;
 
             try
             {
                 foreach (var mixFolderNamePattern in configuredMixedFolderNames)
                 {
                     string mixFolderPath = Path.Combine(modelDirectoryPath, mixFolderNamePattern);
+                    SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Sprawdzanie folderu Mix: {mixFolderPath}");
                     if (Directory.Exists(mixFolderPath))
                     {
                         SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Skanowanie folderu Mix: {mixFolderPath}");
-                        foreach (var imagePath in await _fileScannerService.ScanDirectoryAsync(mixFolderPath))
+                        var imagePathsInMix = await _fileScannerService.ScanDirectoryAsync(mixFolderPath);
+                        SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Znaleziono {imagePathsInMix.Count} obrazów w {mixFolderPath}.");
+                        imagesFoundInMixFolders += imagePathsInMix.Count;
+
+                        foreach (var imagePath in imagePathsInMix)
                         {
                             ImageFileEntry? sourceImageEntry = await _imageMetadataService.ExtractMetadataAsync(imagePath);
                             if (sourceImageEntry == null)
@@ -897,14 +957,26 @@ namespace CosplayManager.ViewModels
                                 SimpleFileLogger.LogWarning($"ExecuteMatchModelSpecificAsync: Nie udało się uzyskać embeddingu dla: {sourceImageEntry.FilePath}");
                                 continue;
                             }
+                            imagesWithEmbeddings++;
+
                             var suggestionTuple = _profileService.SuggestCategory(sourceEmbedding, SuggestionSimilarityThreshold, modelVM.ModelName);
                             if (suggestionTuple != null)
                             {
+                                SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Sugestia dla '{sourceImageEntry.FileName}' -> '{suggestionTuple.Item1.CategoryName}' (Podobieństwo do centroidu: {suggestionTuple.Item2:F4})");
                                 Models.ProposedMove? move = await CreateProposedMoveAsync(sourceImageEntry, suggestionTuple.Item1, suggestionTuple.Item2, modelDirectoryPath, sourceEmbedding);
                                 if (move != null)
                                 {
                                     currentModelProposedMoves.Add(move);
+                                    suggestionsMade++;
                                 }
+                                else
+                                {
+                                    SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: CreateProposedMoveAsync zwrócił null dla '{sourceImageEntry.FileName}' i sugestii '{suggestionTuple.Item1.CategoryName}'.");
+                                }
+                            }
+                            else
+                            {
+                                SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Brak sugestii (powyżej progu) dla '{sourceImageEntry.FileName}' w kontekście modelki '{modelVM.ModelName}'.");
                             }
                         }
                     }
@@ -913,6 +985,8 @@ namespace CosplayManager.ViewModels
                         SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Folder Mix '{mixFolderPath}' nie istnieje, pomijanie.");
                     }
                 }
+                SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Zakończono skanowanie folderów Mix. Obrazów znalezionych: {imagesFoundInMixFolders}, z embeddingami: {imagesWithEmbeddings}, wygenerowanych propozycji: {suggestionsMade}.");
+
 
                 _lastModelSpecificSuggestions = new List<Models.ProposedMove>(currentModelProposedMoves);
                 _lastScannedModelNameForSuggestions = modelVM.ModelName;
@@ -927,7 +1001,7 @@ namespace CosplayManager.ViewModels
                 }
                 else
                 {
-                    MessageBox.Show($"Nie znaleziono żadnych sugestii dla modelki '{modelVM.ModelName}' (powyżej progu {SuggestionSimilarityThreshold:F2}).", "Brak Sugestii", MessageBoxButton.OK, MessageBoxImage.Information);
+                    MessageBox.Show($"Nie znaleziono żadnych sugestii dla modelki '{modelVM.ModelName}' (powyżej progu {SuggestionSimilarityThreshold:F2}).\nSprawdź, czy w folderach Mix są obrazy i czy profile postaci są poprawnie zdefiniowane.", "Brak Sugestii", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
             }
             catch (Exception ex)
@@ -1541,7 +1615,6 @@ namespace CosplayManager.ViewModels
             }
         }
 
-        // NOWE METODY DLA FUNKCJI "PODZIEL PROFIL MODELKI"
         private bool CanExecuteAnalyzeModelForSplitting(object? parameter)
         {
             return parameter is ModelDisplayViewModel modelVM && modelVM.HasCharacterProfiles;
@@ -1676,7 +1749,6 @@ namespace CosplayManager.ViewModels
                 return;
             }
 
-            // Placeholder: podział na pół
             List<ImageFileEntry> group1 = imagesInProfile.Take(imagesInProfile.Count / 2).ToList();
             List<ImageFileEntry> group2 = imagesInProfile.Skip(imagesInProfile.Count / 2).ToList();
 
@@ -1700,13 +1772,9 @@ namespace CosplayManager.ViewModels
             {
                 StatusMessage = $"Użytkownik zatwierdził podział dla '{characterProfile.CategoryName}'. (Logika finalizacji do implementacji)";
                 SimpleFileLogger.Log(StatusMessage);
-                // TODO: Logika finalizacji podziału
                 MessageBox.Show("Funkcjonalność finalizacji podziału (przenoszenie plików, tworzenie nowych profili) nie jest jeszcze zaimplementowana.", "Do zrobienia", MessageBoxButton.OK, MessageBoxImage.Information);
 
-                // Po udanym podziale, warto by było wyczyścić flagę HasSplitSuggestion
                 characterProfile.HasSplitSuggestion = false;
-                // I potencjalnie odświeżyć całą analizę dla modelki lub przynajmniej dla tego profilu (który już nie istnieje w tej formie)
-                // Najprościej będzie odświeżyć widok profili
                 await ExecuteLoadProfilesAsync();
             }
             else
@@ -1715,7 +1783,5 @@ namespace CosplayManager.ViewModels
                 SimpleFileLogger.Log(StatusMessage);
             }
         }
-
-
     }
 }
