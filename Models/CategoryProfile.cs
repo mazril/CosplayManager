@@ -12,7 +12,6 @@ namespace CosplayManager.Models
 {
     public class CategoryProfile : INotifyPropertyChanged
     {
-        // ... (istniejące właściwości: CategoryName, CentroidEmbedding, ImageCountInProfile, SourceImagePaths, PendingSuggestionsCount, HasPendingSuggestions) ...
         private string _categoryName = string.Empty;
         public string CategoryName
         {
@@ -58,9 +57,8 @@ namespace CosplayManager.Models
         [JsonIgnore]
         public bool HasPendingSuggestions => PendingSuggestionsCount > 0;
 
-        // NOWA WŁAŚCIWOŚĆ SYGNALIZUJĄCA MOŻLIWOŚĆ PODZIAŁU
         private bool _hasSplitSuggestion;
-        [JsonIgnore] // Nie chcemy tego serializować, to stan tymczasowy analizy
+        [JsonIgnore]
         public bool HasSplitSuggestion
         {
             get => _hasSplitSuggestion;
@@ -70,7 +68,7 @@ namespace CosplayManager.Models
 
         public CategoryProfile()
         {
-            _hasSplitSuggestion = false; // Domyślnie false
+            _hasSplitSuggestion = false;
         }
 
         [JsonConstructor]
@@ -81,7 +79,7 @@ namespace CosplayManager.Models
             ImageCountInProfile = imageCountInProfile;
             SourceImagePaths = sourceImagePaths ?? new List<string>();
             PendingSuggestionsCount = 0;
-            _hasSplitSuggestion = false; // Domyślnie false
+            _hasSplitSuggestion = false;
         }
         public CategoryProfile(string categoryName) : this(categoryName, null, 0, new List<string>())
         {
