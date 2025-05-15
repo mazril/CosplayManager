@@ -3,16 +3,19 @@ using CosplayManager.Models;
 using CosplayManager.Services;
 using CosplayManager.ViewModels.Base;
 using CosplayManager.Views;
-using Microsoft.Win32;
+using Microsoft.Win32; // Dla OpenFileDialog
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
-using System.Threading;
+using System.Threading; // Dla CancellationToken, jeśli byłoby używane
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
+// Upewnij się, że masz using dla Ookii.Dialogs.Wpf, jeśli go używasz
+// np. using Ookii.Dialogs.Wpf;
+
 
 namespace CosplayManager.ViewModels
 {
@@ -25,6 +28,7 @@ namespace CosplayManager.ViewModels
 
         private List<Models.ProposedMove> _lastModelSpecificSuggestions = new List<Models.ProposedMove>();
         private string? _lastScannedModelNameForSuggestions;
+        private bool _isRefreshingProfilesPostMove = false; // <<< NOWA FLAGA
 
         private const double DUPLICATE_SIMILARITY_THRESHOLD = 0.97;
 
@@ -52,12 +56,14 @@ namespace CosplayManager.ViewModels
                 if (_selectedProfile == null && oldSelectedProfileName != null &&
                     !_profileService.GetAllProfiles().Any(p => p.CategoryName == oldSelectedProfileName))
                 {
-                    UpdateEditFieldsFromSelectedProfile();
+                    // Jeśli profil został usunięty, a nie tylko odznaczony, wyczyść pola
+                    UpdateEditFieldsFromSelectedProfile(); // To wyczyści pola, bo _selectedProfile jest null
                 }
             }
         }
         public bool IsProfileSelected => SelectedProfile != null;
         public bool AnyProfilesLoaded => HierarchicalProfilesList.Any(m => m.HasCharacterProfiles);
+
 
         private string _currentProfileNameForEdit = string.Empty;
         public string CurrentProfileNameForEdit
@@ -77,6 +83,7 @@ namespace CosplayManager.ViewModels
 
         private string _characterNameInput = string.Empty;
         public string CharacterNameInput { get => _characterNameInput; set { if (SetProperty(ref _characterNameInput, value)) UpdateCurrentProfileNameForEdit(); } }
+
 
         private ObservableCollection<ImageFileEntry> _imageFiles;
         public ObservableCollection<ImageFileEntry> ImageFiles
@@ -107,7 +114,7 @@ namespace CosplayManager.ViewModels
             {
                 if (SetProperty(ref _libraryRootPath, value))
                 {
-                    ClearModelSpecificSuggestionsCache();
+                    ClearModelSpecificSuggestionsCache(); // Cache jest specyficzny dla ścieżek
                     (AutoCreateProfilesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (SuggestImagesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (MatchModelSpecificCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
@@ -124,7 +131,7 @@ namespace CosplayManager.ViewModels
             {
                 if (SetProperty(ref _sourceFolderNamesInput, value))
                 {
-                    ClearModelSpecificSuggestionsCache();
+                    ClearModelSpecificSuggestionsCache(); // Cache zależy od folderów źródłowych
                     (AutoCreateProfilesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (SuggestImagesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (MatchModelSpecificCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
@@ -141,7 +148,11 @@ namespace CosplayManager.ViewModels
             {
                 if (SetProperty(ref _suggestionSimilarityThreshold, value))
                 {
-                    RefreshPendingSuggestionCountsFromCache();
+                    // Odśwież liczniki tylko jeśli cache jest załadowany dla jakiegoś modelu
+                    if (!string.IsNullOrEmpty(_lastScannedModelNameForSuggestions))
+                    {
+                        RefreshPendingSuggestionCountsFromCache();
+                    }
                 }
             }
         }
@@ -186,14 +197,14 @@ namespace CosplayManager.ViewModels
             LoadProfilesCommand = new AsyncRelayCommand(ExecuteLoadProfilesAsync);
             GenerateProfileCommand = new AsyncRelayCommand(ExecuteGenerateProfileAsync, CanExecuteGenerateProfile);
             SaveProfilesCommand = new AsyncRelayCommand(ExecuteSaveAllProfilesAsync, CanExecuteSaveAllProfiles);
-            RemoveProfileCommand = new AsyncRelayCommand(ExecuteRemoveProfileAsync, _ => IsProfileSelected);
+            RemoveProfileCommand = new AsyncRelayCommand(ExecuteRemoveProfileAsync, _ => IsProfileSelected); // CanExecute zależy od IsProfileSelected
             AddFilesToProfileCommand = new RelayCommand(ExecuteAddFilesToProfile);
             ClearFilesFromProfileCommand = new RelayCommand(ExecuteClearFilesFromProfile, _ => ImageFiles.Any());
             CreateNewProfileSetupCommand = new RelayCommand(ExecuteCreateNewProfileSetup);
             SelectLibraryPathCommand = new RelayCommand(ExecuteSelectLibraryPath);
             AutoCreateProfilesCommand = new AsyncRelayCommand(ExecuteAutoCreateProfilesAsync, CanExecuteAutoCreateProfiles);
             SuggestImagesCommand = new AsyncRelayCommand(ExecuteSuggestImagesAsync, CanExecuteSuggestImages);
-            SaveAppSettingsCommand = new AsyncRelayCommand(ExecuteSaveAppSettingsAsync);
+            SaveAppSettingsCommand = new AsyncRelayCommand(ExecuteSaveAppSettingsAsync); // Zapis na żądanie, zawsze możliwy
             MatchModelSpecificCommand = new AsyncRelayCommand(ExecuteMatchModelSpecificAsync, CanExecuteMatchModelSpecific);
             CheckCharacterSuggestionsCommand = new AsyncRelayCommand(ExecuteCheckCharacterSuggestionsAsync, CanExecuteCheckCharacterSuggestions);
             RemoveModelTreeCommand = new AsyncRelayCommand(ExecuteRemoveModelTreeAsync, CanExecuteRemoveModelTree);
@@ -207,11 +218,11 @@ namespace CosplayManager.ViewModels
             }
             else if (!string.IsNullOrWhiteSpace(ModelNameInput))
             {
-                CurrentProfileNameForEdit = ModelNameInput;
+                CurrentProfileNameForEdit = ModelNameInput; // Możliwe, że użytkownik chce profil tylko dla modelki
             }
             else if (!string.IsNullOrWhiteSpace(CharacterNameInput))
             {
-                CurrentProfileNameForEdit = CharacterNameInput;
+                CurrentProfileNameForEdit = CharacterNameInput; // Mniej typowe, ale możliwe
             }
             else
             {
@@ -224,12 +235,14 @@ namespace CosplayManager.ViewModels
             if (string.IsNullOrWhiteSpace(categoryName)) return ("UnknownModel", "UnknownCharacter");
             var parts = categoryName.Split(new[] { " - " }, StringSplitOptions.None);
             string model = parts.Length > 0 ? parts[0].Trim() : categoryName.Trim();
-            string character = parts.Length > 1 ? parts[1].Trim() : "General";
+            string character = parts.Length > 1 ? parts[1].Trim() : "General"; // Jeśli brak postaci, to "General"
 
+            // Jeśli po " - " jest pusty string, to też "General"
             if (parts.Length > 1 && string.IsNullOrWhiteSpace(parts[1]))
             {
                 character = "General";
             }
+            // Sanityzacja nazw folderów
             model = SanitizeFolderName(model);
             character = SanitizeFolderName(character);
             return (string.IsNullOrWhiteSpace(model) ? "UnknownModel" : model,
@@ -238,20 +251,22 @@ namespace CosplayManager.ViewModels
 
         private string SanitizeFolderName(string name)
         {
-            if (string.IsNullOrWhiteSpace(name)) return "_";
+            if (string.IsNullOrWhiteSpace(name)) return "_"; // Domyślna nazwa dla pustych
             string invalidChars = new string(Path.GetInvalidFileNameChars()) + new string(Path.GetInvalidPathChars());
             string sanitizedName = name;
-            foreach (char invalidChar in invalidChars.Distinct())
+            foreach (char invalidChar in invalidChars.Distinct()) // Usuń duplikaty z GetInvalidPathChars
             {
                 sanitizedName = sanitizedName.Replace(invalidChar.ToString(), "_");
             }
+            // Dodatkowe typowe znaki, które mogą powodować problemy lub są niechciane
             sanitizedName = sanitizedName.Replace(":", "_").Replace("?", "_").Replace("*", "_")
                                        .Replace("\"", "_").Replace("<", "_").Replace(">", "_")
                                        .Replace("|", "_").Replace("/", "_").Replace("\\", "_");
-            sanitizedName = sanitizedName.Trim().TrimStart('.').TrimEnd('.');
-            if (string.IsNullOrWhiteSpace(sanitizedName)) return "_";
+            sanitizedName = sanitizedName.Trim().TrimStart('.').TrimEnd('.'); // Usuń kropki na początku/końcu
+            if (string.IsNullOrWhiteSpace(sanitizedName)) return "_"; // Jeśli wszystko zostało usunięte
             return sanitizedName;
         }
+
 
         private void UpdateEditFieldsFromSelectedProfile()
         {
@@ -260,7 +275,7 @@ namespace CosplayManager.ViewModels
                 CurrentProfileNameForEdit = _selectedProfile.CategoryName;
                 var (model, character) = ParseCategoryName(_selectedProfile.CategoryName);
                 ModelNameInput = model;
-                CharacterNameInput = character;
+                CharacterNameInput = (character == "General" && _selectedProfile.CategoryName == model) ? "" : character; // Jeśli to profil "General" dla samej modelki, nie pokazuj "General" w polu
 
                 var newImageFiles = new ObservableCollection<ImageFileEntry>();
                 if (_selectedProfile.SourceImagePaths != null)
@@ -273,18 +288,18 @@ namespace CosplayManager.ViewModels
                         }
                         else
                         {
-                            SimpleFileLogger.Log($"OSTRZEŻENIE (UpdateEditFields): Ścieżka obrazu '{path}' dla profilu '{_selectedProfile.CategoryName}' nie istnieje.");
+                            SimpleFileLogger.LogWarning($"OSTRZEŻENIE (UpdateEditFields): Ścieżka obrazu '{path}' dla profilu '{_selectedProfile.CategoryName}' nie istnieje.");
                         }
                     }
                 }
-                ImageFiles = newImageFiles;
+                ImageFiles = newImageFiles; // To wywoła PropertyChanged
             }
             else
             {
                 CurrentProfileNameForEdit = string.Empty;
                 ModelNameInput = string.Empty;
                 CharacterNameInput = string.Empty;
-                ImageFiles = new ObservableCollection<ImageFileEntry>();
+                ImageFiles = new ObservableCollection<ImageFileEntry>(); // To wywoła PropertyChanged
             }
         }
 
@@ -293,7 +308,10 @@ namespace CosplayManager.ViewModels
             SimpleFileLogger.Log("ClearModelSpecificSuggestionsCache: Czyszczenie cache sugestii dla modelu.");
             _lastModelSpecificSuggestions.Clear();
             _lastScannedModelNameForSuggestions = null;
+            // Po wyczyszczeniu cache'u, odświeżamy liczniki, aby UI pokazało brak sugestii
+            RefreshPendingSuggestionCountsFromCache();
         }
+
 
         private UserSettings GetCurrentSettings()
         {
@@ -309,19 +327,11 @@ namespace CosplayManager.ViewModels
         {
             if (settings != null)
             {
-                _libraryRootPath = settings.LibraryRootPath;
-                OnPropertyChanged(nameof(LibraryRootPath));
-                _sourceFolderNamesInput = settings.SourceFolderNamesInput;
-                OnPropertyChanged(nameof(SourceFolderNamesInput));
-
-                _suggestionSimilarityThreshold = settings.SuggestionSimilarityThreshold;
-                OnPropertyChanged(nameof(SuggestionSimilarityThreshold));
-
-                ClearModelSpecificSuggestionsCache();
-                (AutoCreateProfilesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
-                (SuggestImagesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
-                (MatchModelSpecificCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
-                (CheckCharacterSuggestionsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+                // Używamy pól prywatnych, aby PropertyChanged było wywołane przez publiczne settery
+                // i aby logika w setterach (np. ClearModelSpecificSuggestionsCache) została wykonana.
+                LibraryRootPath = settings.LibraryRootPath;
+                SourceFolderNamesInput = settings.SourceFolderNamesInput;
+                SuggestionSimilarityThreshold = settings.SuggestionSimilarityThreshold;
 
                 SimpleFileLogger.Log("Zastosowano wczytane ustawienia aplikacji.");
             }
@@ -351,7 +361,8 @@ namespace CosplayManager.ViewModels
                 SimpleFileLogger.Log("InitializeAsync: Nie wczytano ustawień, używam domyślnych wartości z ViewModelu.");
             }
 
-            await ExecuteLoadProfilesAsync();
+            // Ładujemy profile PO ustawieniach, ponieważ ścieżki profili mogą zależeć od ustawień
+            await ExecuteLoadProfilesAsync(); // To wywoła ClearModelSpecificSuggestionsCache
 
             if (string.IsNullOrEmpty(LibraryRootPath))
             {
@@ -360,7 +371,7 @@ namespace CosplayManager.ViewModels
             else if (!Directory.Exists(LibraryRootPath))
             {
                 StatusMessage = $"Uwaga: Folder biblioteki '{LibraryRootPath}' nie istnieje. Proszę wybrać poprawny.";
-                SimpleFileLogger.Log($"OSTRZEŻENIE: Wczytany LibraryRootPath ('{LibraryRootPath}') nie istnieje.");
+                SimpleFileLogger.LogWarning($"OSTRZEŻENIE: Wczytany LibraryRootPath ('{LibraryRootPath}') nie istnieje.");
             }
             else
             {
@@ -380,39 +391,21 @@ namespace CosplayManager.ViewModels
         private bool CanExecuteAutoCreateProfiles(object? arg) => !string.IsNullOrWhiteSpace(LibraryRootPath) && Directory.Exists(LibraryRootPath);
         private bool CanExecuteGenerateProfile(object? parameter = null) => !string.IsNullOrWhiteSpace(CurrentProfileNameForEdit) && !CurrentProfileNameForEdit.Equals("Nowa Kategoria", StringComparison.OrdinalIgnoreCase) && ImageFiles.Any();
         private bool CanExecuteSuggestImages(object? parameter = null) => !string.IsNullOrWhiteSpace(LibraryRootPath) && Directory.Exists(LibraryRootPath) && HierarchicalProfilesList.Any(m => m.HasCharacterProfiles) && !string.IsNullOrWhiteSpace(SourceFolderNamesInput);
-        private bool CanExecuteCheckCharacterSuggestions(object? parameter) => parameter is CategoryProfile profile && !string.IsNullOrWhiteSpace(LibraryRootPath) && Directory.Exists(LibraryRootPath) && !string.IsNullOrWhiteSpace(SourceFolderNamesInput) && profile.CentroidEmbedding != null;
+        private bool CanExecuteCheckCharacterSuggestions(object? parameter)
+        {
+            return parameter is CategoryProfile profile &&
+                   !string.IsNullOrWhiteSpace(LibraryRootPath) &&
+                   Directory.Exists(LibraryRootPath) &&
+                   !string.IsNullOrWhiteSpace(SourceFolderNamesInput) &&
+                   profile.CentroidEmbedding != null; // Musi być centroid, aby porównywać
+        }
         private bool CanExecuteMatchModelSpecific(object? parameter)
         {
-            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Sprawdzanie warunków...");
-            if (!(parameter is ModelDisplayViewModel modelVM))
-            {
-                SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Parametr nie jest ModelDisplayViewModel. Wynik: false");
-                return false;
-            }
-            SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: Parametr OK, Modelka: {modelVM.ModelName}");
-
-            if (string.IsNullOrWhiteSpace(LibraryRootPath) || !Directory.Exists(LibraryRootPath))
-            {
-                SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: LibraryRootPath niepoprawny ('{LibraryRootPath}'). Wynik: false");
-                return false;
-            }
-            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: LibraryRootPath OK.");
-
-            if (!modelVM.HasCharacterProfiles)
-            {
-                SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: Modelka '{modelVM.ModelName}' nie ma profili postaci (HasCharacterProfiles: {modelVM.HasCharacterProfiles}). Wynik: false");
-                return false;
-            }
-            SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: Modelka '{modelVM.ModelName}' ma profile postaci.");
-
-            if (string.IsNullOrWhiteSpace(SourceFolderNamesInput))
-            {
-                SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: SourceFolderNamesInput jest pusty ('{SourceFolderNamesInput}'). Wynik: false");
-                return false;
-            }
-            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: SourceFolderNamesInput OK.");
-            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Wszystkie warunki spełnione. Wynik: true");
-            return true;
+            if (!(parameter is ModelDisplayViewModel modelVM)) return false;
+            return !string.IsNullOrWhiteSpace(LibraryRootPath) &&
+                   Directory.Exists(LibraryRootPath) &&
+                   modelVM.HasCharacterProfiles && // Modelka musi mieć jakieś profile postaci
+                   !string.IsNullOrWhiteSpace(SourceFolderNamesInput);
         }
         private bool CanExecuteRemoveModelTree(object? parameter) => parameter is ModelDisplayViewModel;
 
@@ -420,16 +413,25 @@ namespace CosplayManager.ViewModels
         private async Task ExecuteLoadProfilesAsync(object? parameter = null)
         {
             StatusMessage = "Ładowanie profili...";
-            SimpleFileLogger.Log("ViewModel: Rozpoczęto ładowanie profili (ExecuteLoadProfilesAsync)...");
-            ClearModelSpecificSuggestionsCache();
+            SimpleFileLogger.Log($"ViewModel: Rozpoczęto ładowanie profili (ExecuteLoadProfilesAsync). Flaga _isRefreshingProfilesPostMove: {_isRefreshingProfilesPostMove}");
+
+            if (!_isRefreshingProfilesPostMove) // <<< UŻYCIE FLAGI
+            {
+                ClearModelSpecificSuggestionsCache(); // Czyści też _lastScannedModelNameForSuggestions i odświeża liczniki do zera
+            }
+            else
+            {
+                SimpleFileLogger.Log("ExecuteLoadProfilesAsync: Pominięto ClearModelSpecificSuggestionsCache z powodu flagi _isRefreshingProfilesPostMove.");
+            }
 
             string? previouslySelectedCategoryName = SelectedProfile?.CategoryName;
-            await _profileService.LoadProfilesAsync();
+            await _profileService.LoadProfilesAsync(); // To ładuje z dysku do _profileService._profiles
             var allFlatProfiles = _profileService.GetAllProfiles()?.OrderBy(p => p.CategoryName).ToList();
 
+            // Aktualizacja HierarchicalProfilesList musi być w wątku UI
             await Application.Current.Dispatcher.InvokeAsync(() =>
             {
-                HierarchicalProfilesList.Clear();
+                HierarchicalProfilesList.Clear(); // Czyści UI
                 if (allFlatProfiles != null && allFlatProfiles.Any())
                 {
                     var groupedByModel = allFlatProfiles
@@ -441,6 +443,9 @@ namespace CosplayManager.ViewModels
                         var modelVM = new ModelDisplayViewModel(modelGroup.Key);
                         foreach (var characterProfile in modelGroup.OrderBy(p => _profileService.GetCharacterNameFromCategory(p.CategoryName)))
                         {
+                            // Obiekty CategoryProfile są tutaj nowymi instancjami (lub odtworzonymi z deserializacji).
+                            // Ich PendingSuggestionsCount będzie domyślnie 0 (z konstruktora CategoryProfile).
+                            // Zostanie to zaktualizowane przez RefreshPendingSuggestionCountsFromCache, jeśli cache sugestii nie został wyczyszczony.
                             modelVM.AddCharacterProfile(characterProfile);
                         }
                         HierarchicalProfilesList.Add(modelVM);
@@ -451,16 +456,20 @@ namespace CosplayManager.ViewModels
                 StatusMessage = $"Załadowano {totalProfiles} profili dla {HierarchicalProfilesList.Count} modelek.";
                 SimpleFileLogger.Log($"ViewModel: Zakończono ładowanie (wątek UI). Załadowano {totalProfiles} profili dla {HierarchicalProfilesList.Count} modelek.");
 
+                // Przywróć zaznaczenie, jeśli było
                 if (!string.IsNullOrEmpty(previouslySelectedCategoryName))
                 {
                     SelectedProfile = allFlatProfiles?.FirstOrDefault(p => p.CategoryName.Equals(previouslySelectedCategoryName, StringComparison.OrdinalIgnoreCase));
                 }
                 else if (SelectedProfile != null && !(allFlatProfiles?.Any(p => p.CategoryName == SelectedProfile.CategoryName) ?? false))
                 {
+                    // Jeśli poprzednio zaznaczony profil już nie istnieje
                     SelectedProfile = null;
                 }
 
+
                 OnPropertyChanged(nameof(AnyProfilesLoaded));
+                // Odśwież CanExecute dla komend, które mogły się zmienić
                 (SuggestImagesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 (SaveProfilesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 (RemoveProfileCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
@@ -468,6 +477,17 @@ namespace CosplayManager.ViewModels
                 (MatchModelSpecificCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 (CheckCharacterSuggestionsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 (RemoveModelTreeCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+
+                // Jeśli _isRefreshingProfilesPostMove było true, cache sugestii NIE został wyczyszczony.
+                // Ponieważ HierarchicalProfilesList została przebudowana z nowymi obiektami CategoryProfile,
+                // musimy teraz zsynchronizować ich PendingSuggestionsCount z istniejącym cachem.
+                // Jeśli _isRefreshingProfilesPostMove było false, cache został wyczyszczony,
+                // a RefreshPendingSuggestionCountsFromCache (wywołane przez ClearModelSpecificSuggestionsCache) już ustawiło wszystko na 0.
+                if (_isRefreshingProfilesPostMove)
+                {
+                    SimpleFileLogger.Log("ExecuteLoadProfilesAsync: _isRefreshingProfilesPostMove=true, wywołuję RefreshPendingSuggestionCountsFromCache aby zsynchronizować nowe obiekty UI z zachowanym cachem.");
+                    RefreshPendingSuggestionCountsFromCache();
+                }
             });
         }
 
@@ -485,13 +505,14 @@ namespace CosplayManager.ViewModels
 
             try
             {
+                // Przekazujemy listę ImageFileEntry
                 await _profileService.GenerateProfileAsync(categoryName, ImageFiles.ToList());
                 StatusMessage = $"Profil '{categoryName}' wygenerowany/zaktualizowany.";
                 SimpleFileLogger.Log($"Profil '{categoryName}' wygenerowany/zaktualizowany.");
 
-                await ExecuteLoadProfilesAsync();
-                SelectedProfile = _profileService.GetProfile(categoryName);
-
+                // Po wygenerowaniu/aktualizacji profilu, przeładuj listę profili w UI
+                await ExecuteLoadProfilesAsync(); // To również odświeży cache sugestii, jeśli trzeba
+                SelectedProfile = _profileService.GetProfile(categoryName); // Ponownie zaznacz profil
             }
             catch (Exception ex)
             {
@@ -514,11 +535,11 @@ namespace CosplayManager.ViewModels
         private async Task ExecuteRemoveProfileAsync(object? parameter)
         {
             CategoryProfile? profileToRemove = null;
-            if (parameter is CategoryProfile contextProfile)
+            if (parameter is CategoryProfile contextProfile) // Usunięcie z menu kontekstowego
             {
                 profileToRemove = contextProfile;
             }
-            else if (SelectedProfile != null)
+            else if (SelectedProfile != null) // Usunięcie zaznaczonego profilu
             {
                 profileToRemove = SelectedProfile;
             }
@@ -533,15 +554,16 @@ namespace CosplayManager.ViewModels
                                          "Potwierdź usunięcie", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (result == MessageBoxResult.Yes)
             {
-                string profileNameToRemoveStr = profileToRemove.CategoryName;
+                string profileNameToRemoveStr = profileToRemove.CategoryName; // Zapisz nazwę przed potencjalnym ustawieniem SelectedProfile na null
                 StatusMessage = $"Usuwanie profilu '{profileNameToRemoveStr}'...";
                 SimpleFileLogger.Log($"ViewModel: Usuwanie profilu '{profileNameToRemoveStr}'.");
                 bool removed = await _profileService.RemoveProfileAsync(profileNameToRemoveStr);
                 if (removed)
                 {
                     StatusMessage = $"Profil '{profileNameToRemoveStr}' usunięty.";
+                    // Jeśli usunięto aktualnie zaznaczony profil, odznacz go.
                     if (SelectedProfile?.CategoryName == profileNameToRemoveStr) SelectedProfile = null;
-                    await ExecuteLoadProfilesAsync();
+                    await ExecuteLoadProfilesAsync(); // Przeładuj listę profili
                 }
                 else
                 {
@@ -579,15 +601,19 @@ namespace CosplayManager.ViewModels
 
         private void ExecuteClearFilesFromProfile(object? parameter = null)
         {
-            ImageFiles = new ObservableCollection<ImageFileEntry>();
+            ImageFiles.Clear(); // Użyj Clear() zamiast tworzyć nową kolekcję, aby uniknąć problemów z odświeżaniem UI
+            // RaiseCanExecuteChanged dla GenerateProfileCommand jest obsługiwane przez setter ImageFiles,
+            // ale Clear nie wywoła settera. Trzeba to zrobić ręcznie.
+            (GenerateProfileCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         }
 
         private void ExecuteCreateNewProfileSetup(object? parameter = null)
         {
-            SelectedProfile = null;
-            CurrentProfileNameForEdit = "Nowa Kategoria";
-            ModelNameInput = string.Empty; CharacterNameInput = string.Empty;
-            ImageFiles = new ObservableCollection<ImageFileEntry>();
+            SelectedProfile = null; // Odznacz bieżący profil
+            CurrentProfileNameForEdit = "Nowa Kategoria"; // Placeholder
+            ModelNameInput = string.Empty; // Wyczyść pola wprowadzania
+            CharacterNameInput = string.Empty;
+            ImageFiles.Clear(); // Wyczyść listę plików
             StatusMessage = "Gotowy do utworzenia nowego profilu. Wprowadź dane i dodaj obrazy.";
         }
 
@@ -599,16 +625,17 @@ namespace CosplayManager.ViewModels
                 {
                     Description = "Wybierz główny folder biblioteki Cosplay",
                     UseDescriptionForTitle = true,
-                    ShowNewFolderButton = true
+                    ShowNewFolderButton = true // Umożliwia tworzenie nowego folderu z poziomu dialogu
                 };
+                // Jeśli ścieżka jest już ustawiona i istnieje, ustaw ją jako startową
                 if (!string.IsNullOrWhiteSpace(LibraryRootPath) && Directory.Exists(LibraryRootPath))
                 {
                     dialog.SelectedPath = LibraryRootPath;
                 }
-                var owner = Application.Current.Windows.OfType<Window>().SingleOrDefault(x => x.IsActive);
+                var owner = Application.Current.Windows.OfType<Window>().SingleOrDefault(x => x.IsActive); // Pobierz aktywne okno jako właściciela dialogu
                 if (dialog.ShowDialog(owner) == true)
                 {
-                    LibraryRootPath = dialog.SelectedPath;
+                    LibraryRootPath = dialog.SelectedPath; // To wywoła setter i logikę z nim związaną (np. ClearCache)
                     SimpleFileLogger.Log($"Wybrano nową ścieżkę biblioteki: {LibraryRootPath}");
                 }
             }
@@ -626,7 +653,7 @@ namespace CosplayManager.ViewModels
                 return;
             }
             StatusMessage = "Automatyczne tworzenie/aktualizacja profili z: " + LibraryRootPath;
-            ClearModelSpecificSuggestionsCache();
+            // ClearModelSpecificSuggestionsCache(); // Już jest w setterze LibraryRootPath, ale dla pewności
             SimpleFileLogger.Log($"ExecuteAutoCreateProfilesAsync: Rozpoczęto skanowanie {LibraryRootPath}.");
 
             var configuredMixedFolderNames = new HashSet<string>(
@@ -636,82 +663,114 @@ namespace CosplayManager.ViewModels
             );
 
             int profilesCreatedOrUpdated = 0;
-            // ... (reszta logiki metody bez zmian)
             List<string> modelDirectories;
 
             try
             {
                 modelDirectories = Directory.GetDirectories(LibraryRootPath).ToList();
             }
-            catch (Exception ex) { /* ... obsługa błędu ... */ return; }
+            catch (Exception ex)
+            {
+                SimpleFileLogger.LogError($"Błąd podczas pobierania folderów modelek z '{LibraryRootPath}'", ex);
+                StatusMessage = $"Błąd dostępu do folderu biblioteki: {ex.Message}";
+                MessageBox.Show(StatusMessage, "Błąd Skanowania", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
 
 
             foreach (var modelDir in modelDirectories)
             {
-                // ...
+                string modelName = Path.GetFileName(modelDir);
+                if (configuredMixedFolderNames.Contains(modelName)) continue; // Pomiń, jeśli folder modelki jest na liście folderów Mix (co nie powinno mieć miejsca)
+
                 try
                 {
                     foreach (var characterDir in Directory.GetDirectories(modelDir))
                     {
-                        // ...
-                        string categoryName = $"{Path.GetFileName(modelDir)} - {Path.GetFileName(characterDir)}";
-                        if (configuredMixedFolderNames.Contains(Path.GetFileName(characterDir))) continue;
-                        // ...
-                        List<string> imagePathsInCharacterDir = await Task.Run(() =>
-                            Directory.GetFiles(characterDir, "*.*", SearchOption.TopDirectoryOnly)
+                        string characterName = Path.GetFileName(characterDir);
+                        // Pomiń foldery postaci, które są zdefiniowane jako "Mix" na poziomie postaci
+                        if (configuredMixedFolderNames.Contains(characterName))
+                        {
+                            SimpleFileLogger.Log($"ExecuteAutoCreateProfilesAsync: Pomijanie folderu '{characterName}' wewnątrz '{modelName}' (jest na liście folderów Mix).");
+                            continue;
+                        }
+
+                        string categoryName = $"{modelName} - {characterName}";
+                        SimpleFileLogger.Log($"ExecuteAutoCreateProfilesAsync: Przetwarzanie folderu postaci: {categoryName}");
+
+                        List<string> imagePathsInCharacterDir = await Task.Run(() => // Uruchom w tle, aby nie blokować UI
+                            Directory.GetFiles(characterDir, "*.*", SearchOption.TopDirectoryOnly) // Tylko bieżący folder postaci
                                      .Where(f => _fileScannerService.IsExtensionSupported(Path.GetExtension(f)))
                                      .ToList());
-                        // ... (logika tworzenia/aktualizacji profilu) ...
+
                         if (imagePathsInCharacterDir.Any())
                         {
                             List<ImageFileEntry> imageEntries = new List<ImageFileEntry>();
                             foreach (var path in imagePathsInCharacterDir)
                             {
+                                // Dla automatycznego tworzenia, możemy pominąć kosztowne wyciąganie embeddingu,
+                                // chyba że chcemy od razu pełne profile. Na razie tylko metadane.
                                 var entry = await _imageMetadataService.ExtractMetadataAsync(path);
                                 if (entry != null) imageEntries.Add(entry);
                             }
 
                             if (imageEntries.Any())
                             {
+                                // GenerateProfileAsync obliczy centroid, jeśli obrazy są dostarczone
                                 await _profileService.GenerateProfileAsync(categoryName, imageEntries);
                                 profilesCreatedOrUpdated++;
+                                SimpleFileLogger.Log($"ExecuteAutoCreateProfilesAsync: Profil '{categoryName}' utworzony/zaktualizowany z {imageEntries.Count} obrazami.");
                             }
                         }
                         else
                         {
+                            // Jeśli folder postaci jest pusty, ale profil dla niego istnieje,
+                            // można go wyczyścić (usunąć ścieżki i centroid)
                             if (_profileService.GetProfile(categoryName) != null)
                             {
-                                await _profileService.GenerateProfileAsync(categoryName, new List<ImageFileEntry>());
+                                await _profileService.GenerateProfileAsync(categoryName, new List<ImageFileEntry>()); // Wywołanie z pustą listą czyści profil
+                                SimpleFileLogger.Log($"ExecuteAutoCreateProfilesAsync: Profil '{categoryName}' istniał, ale folder jest pusty. Profil wyczyszczony.");
                             }
                         }
-                    }
+                    } // end foreach characterDir
                 }
-                catch (Exception ex) { /* ... obsługa błędu ... */ }
-            }
+                catch (Exception ex)
+                {
+                    SimpleFileLogger.LogError($"Błąd podczas przetwarzania folderu modelki '{modelName}'", ex);
+                    // Kontynuuj z następną modelką
+                }
+            } // end foreach modelDir
             StatusMessage = $"Zakończono. Utworzono/zaktualizowano: {profilesCreatedOrUpdated} profili.";
-            await ExecuteLoadProfilesAsync();
+            await ExecuteLoadProfilesAsync(); // Przeładuj wszystkie profile do UI
             MessageBox.Show(StatusMessage, "Skanowanie Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
 
         private async Task<Models.ProposedMove?> CreateProposedMoveAsync(ImageFileEntry sourceImageEntry, CategoryProfile suggestedProfileData, double similarityToCentroid, string modelDirectoryPath, float[] sourceEmbedding)
         {
-            var (_, characterNameFromSuggestedProfile) = ParseCategoryName(suggestedProfileData.CategoryName);
+            var (modelNameFromSource, characterNameFromSuggestedProfile) = ParseCategoryName(suggestedProfileData.CategoryName);
+            // Upewnij się, że modelDirectoryPath jest poprawny dla modelNameFromSource
+            // Zwykle modelDirectoryPath jest już kontekstem aktualnej modelki.
+
             string targetCharacterFolder = Path.Combine(modelDirectoryPath, characterNameFromSuggestedProfile);
             Directory.CreateDirectory(targetCharacterFolder);
 
-            string proposedPathIfCopiedAsNew = Path.Combine(targetCharacterFolder, sourceImageEntry.FileName);
+            // Proponowana ścieżka, jeśli plik jest po prostu kopiowany z oryginalną nazwą pliku źródłowego
+            string proposedPathIfCopiedWithSourceName = Path.Combine(targetCharacterFolder, sourceImageEntry.FileName);
 
             ImageFileEntry? bestMatchingTargetInFolder = null;
             double maxSimilarityToExistingInFolder = 0.0;
 
+            // Sprawdź, czy w folderze docelowym istnieje już plik będący duplikatem KONTENTOWYM
             foreach (string existingFilePathInTarget in Directory.EnumerateFiles(targetCharacterFolder)
                 .Where(f => _fileScannerService.IsExtensionSupported(Path.GetExtension(f))))
             {
+                // Nie porównuj pliku źródłowego samego ze sobą, jeśli jakimś cudem już tam jest
                 if (string.Equals(Path.GetFullPath(existingFilePathInTarget), Path.GetFullPath(sourceImageEntry.FilePath), StringComparison.OrdinalIgnoreCase)) continue;
 
+                // Potrzebujemy embeddingu istniejącego pliku do porównania
                 ImageFileEntry? existingFileMeta = await _imageMetadataService.ExtractMetadataAsync(existingFilePathInTarget);
-                float[]? existingEmbedding = await _profileService.GetImageEmbeddingAsync(existingFilePathInTarget);
+                float[]? existingEmbedding = await _profileService.GetImageEmbeddingAsync(existingFilePathInTarget); // Użyj metody z ProfileService
 
                 if (existingFileMeta != null && existingEmbedding != null)
                 {
@@ -725,16 +784,18 @@ namespace CosplayManager.ViewModels
             }
 
             ProposedMoveActionType actionType;
-            string finalProposedTargetPath = proposedPathIfCopiedAsNew;
-            ImageFileEntry? finalTargetImageForDisplay = null;
-            double displaySimilarity = similarityToCentroid;
+            string finalProposedTargetPath = proposedPathIfCopiedWithSourceName; // Domyślnie, jeśli nie ma konfliktów
+            ImageFileEntry? finalTargetImageForDisplay = null; // Obraz, który będzie wyświetlany jako "docelowy" w UI
+            double displaySimilarity = similarityToCentroid; // Domyślnie pokazujemy podobieństwo do centroidu profilu
 
             if (bestMatchingTargetInFolder != null && maxSimilarityToExistingInFolder >= DUPLICATE_SIMILARITY_THRESHOLD)
             {
+                // Znaleziono silny duplikat KONTENTOWY w folderze docelowym
                 finalTargetImageForDisplay = bestMatchingTargetInFolder;
-                displaySimilarity = maxSimilarityToExistingInFolder;
-                finalProposedTargetPath = bestMatchingTargetInFolder.FilePath;
+                displaySimilarity = maxSimilarityToExistingInFolder; // Wyświetl podobieństwo do tego konkretnego pliku
+                finalProposedTargetPath = bestMatchingTargetInFolder.FilePath; // Celem operacji będzie ten istniejący plik
 
+                // Porównaj jakość źródła z tym znalezionym duplikatem kontentowym
                 long sourceRes = (long)sourceImageEntry.Width * sourceImageEntry.Height;
                 long targetRes = (long)bestMatchingTargetInFolder.Width * bestMatchingTargetInFolder.Height;
                 long sourceSize = new FileInfo(sourceImageEntry.FilePath).Length;
@@ -742,30 +803,42 @@ namespace CosplayManager.ViewModels
 
                 if (sourceRes > targetRes || (sourceRes == targetRes && sourceSize > targetSize))
                 {
-                    actionType = ProposedMoveActionType.OverwriteExisting;
+                    actionType = ProposedMoveActionType.OverwriteExisting; // Źródło jest lepsze, nadpisz istniejący duplikat
                 }
                 else
                 {
-                    actionType = ProposedMoveActionType.KeepExistingDeleteSource;
+                    actionType = ProposedMoveActionType.KeepExistingDeleteSource; // Istniejący duplikat jest lepszy lub taki sam, zachowaj go, usuń źródło
                 }
             }
             else
             {
-                if (File.Exists(proposedPathIfCopiedAsNew) &&
-                    !string.Equals(Path.GetFullPath(proposedPathIfCopiedAsNew), Path.GetFullPath(sourceImageEntry.FilePath), StringComparison.OrdinalIgnoreCase))
+                // Nie znaleziono silnego duplikatu KONTENTOWEGO.
+                // Sprawdź teraz konflikt NAZWY: czy plik o tej samej nazwie co źródłowy już istnieje w folderze docelowym.
+                // `proposedPathIfCopiedWithSourceName` to ścieżka z nazwą pliku źródłowego w folderze docelowym.
+                if (File.Exists(proposedPathIfCopiedWithSourceName) &&
+                    !string.Equals(Path.GetFullPath(proposedPathIfCopiedWithSourceName), Path.GetFullPath(sourceImageEntry.FilePath), StringComparison.OrdinalIgnoreCase))
                 {
-                    finalTargetImageForDisplay = await _imageMetadataService.ExtractMetadataAsync(proposedPathIfCopiedAsNew);
+                    // Tak, plik o tej samej nazwie co źródłowy już tam jest (ale nie jest to silny duplikat kontentowy).
+                    // To jest sytuacja "ConflictKeepBoth" według oryginalnej logiki, którą teraz będziemy obsługiwać przez porównanie jakości.
+                    finalTargetImageForDisplay = await _imageMetadataService.ExtractMetadataAsync(proposedPathIfCopiedWithSourceName);
                     actionType = ProposedMoveActionType.ConflictKeepBoth;
+                    // `finalProposedTargetPath` pozostaje `proposedPathIfCopiedWithSourceName` - to jest plik, z którym mamy konflikt nazwy.
                 }
                 else
                 {
+                    // Nie ma konfliktu nazwy (plik o nazwie źródłowego nie istnieje w docelowym folderze)
+                    // LUB `proposedPathIfCopiedWithSourceName` to ten sam plik co źródłowy (co nie powinno się zdarzyć, jeśli źródło jest z "Mix").
                     actionType = ProposedMoveActionType.CopyNew;
+                    // `finalProposedTargetPath` pozostaje `proposedPathIfCopiedWithSourceName`.
                 }
             }
 
+            // Ostatnie sprawdzenie: jeśli akcja to KeepExistingDeleteSource, a ścieżka źródłowa i docelowa są identyczne
+            // (co nie powinno się zdarzyć, jeśli źródło jest z folderu Mix), to nie twórz ruchu.
             if (actionType == ProposedMoveActionType.KeepExistingDeleteSource &&
                 string.Equals(Path.GetFullPath(sourceImageEntry.FilePath), Path.GetFullPath(finalProposedTargetPath), StringComparison.OrdinalIgnoreCase))
             {
+                SimpleFileLogger.Log($"CreateProposedMoveAsync: Pomijanie tworzenia ruchu dla {sourceImageEntry.FileName}, akcja KeepExistingDeleteSource wskazuje na ten sam plik.");
                 return null;
             }
             return new Models.ProposedMove(sourceImageEntry, finalTargetImageForDisplay, finalProposedTargetPath, displaySimilarity, suggestedProfileData.CategoryName, actionType);
@@ -774,36 +847,62 @@ namespace CosplayManager.ViewModels
         private async Task ExecuteMatchModelSpecificAsync(object? parameter)
         {
             SimpleFileLogger.Log("ExecuteMatchModelSpecificAsync: Rozpoczęto wykonanie.");
-            if (!(parameter is ModelDisplayViewModel modelVM)) { SimpleFileLogger.Log("Parametr nie jest ModelDisplayViewModel."); return; }
-            if (!await Application.Current.Dispatcher.InvokeAsync(() => CanExecuteMatchModelSpecific(modelVM))) { SimpleFileLogger.Log("CanExecute zwróciło false."); return; }
+            if (!(parameter is ModelDisplayViewModel modelVM)) { SimpleFileLogger.LogWarning("ExecuteMatchModelSpecificAsync: Parametr nie jest ModelDisplayViewModel."); return; }
 
-            var configuredMixedFolderNames = new HashSet<string>(SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(name => name.Trim()), StringComparer.OrdinalIgnoreCase);
-            if (!configuredMixedFolderNames.Any()) { MessageBox.Show("Zdefiniuj foldery Mix."); return; }
+            // Sprawdzenie CanExecute w wątku UI, jeśli to konieczne, ale zwykle CanExecute jest już sprawdzone przez ICommand.
+            // if (!await Application.Current.Dispatcher.InvokeAsync(() => CanExecuteMatchModelSpecific(modelVM))) { SimpleFileLogger.Log("ExecuteMatchModelSpecificAsync: CanExecute zwróciło false."); return; }
+
+            var configuredMixedFolderNames = new HashSet<string>(
+                SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                                     .Select(name => name.Trim()),
+                StringComparer.OrdinalIgnoreCase);
+
+            if (!configuredMixedFolderNames.Any())
+            {
+                MessageBox.Show("Zdefiniuj nazwy folderów źródłowych (np. Mix, Unsorted) w ustawieniach zaawansowanych.", "Brak folderów źródłowych", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
 
             StatusMessage = $"Obliczanie sugestii dla modelki: {modelVM.ModelName}...";
             var currentModelProposedMoves = new List<Models.ProposedMove>();
-            string modelDirectoryPath = Path.Combine(LibraryRootPath, modelVM.ModelName);
-            if (!Directory.Exists(modelDirectoryPath)) { MessageBox.Show($"Folder modelki '{modelVM.ModelName}' nie istnieje."); return; }
+            string modelDirectoryPath = Path.Combine(LibraryRootPath, modelVM.ModelName); // Np. E:\Cosplay\ModelkaX
+            if (!Directory.Exists(modelDirectoryPath))
+            {
+                MessageBox.Show($"Folder modelki '{modelVM.ModelName}' ('{modelDirectoryPath}') nie istnieje.", "Błąd ścieżki", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
 
+            // Zeruj liczniki przed nowym skanowaniem dla tego modelu
             modelVM.PendingSuggestionsCount = 0;
             foreach (var charProfile in modelVM.CharacterProfiles) charProfile.PendingSuggestionsCount = 0;
 
             try
             {
-                foreach (var mixFolderNamePattern in configuredMixedFolderNames)
+                foreach (var mixFolderNamePattern in configuredMixedFolderNames) // Np. "Mix", "Unsorted"
                 {
-                    string mixFolderPath = Path.Combine(modelDirectoryPath, mixFolderNamePattern);
+                    string mixFolderPath = Path.Combine(modelDirectoryPath, mixFolderNamePattern); // Np. E:\Cosplay\ModelkaX\Mix
                     if (Directory.Exists(mixFolderPath))
                     {
+                        SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Skanowanie folderu Mix: {mixFolderPath}");
+                        // ScanDirectoryAsync zwraca pełne ścieżki do plików
                         foreach (var imagePath in await _fileScannerService.ScanDirectoryAsync(mixFolderPath))
                         {
                             ImageFileEntry? sourceImageEntry = await _imageMetadataService.ExtractMetadataAsync(imagePath);
-                            if (sourceImageEntry == null) continue;
+                            if (sourceImageEntry == null)
+                            {
+                                SimpleFileLogger.LogWarning($"ExecuteMatchModelSpecificAsync: Nie udało się odczytać metadanych dla: {imagePath}");
+                                continue;
+                            }
                             float[]? sourceEmbedding = await _profileService.GetImageEmbeddingAsync(sourceImageEntry.FilePath);
-                            if (sourceEmbedding == null) continue;
+                            if (sourceEmbedding == null)
+                            {
+                                SimpleFileLogger.LogWarning($"ExecuteMatchModelSpecificAsync: Nie udało się uzyskać embeddingu dla: {sourceImageEntry.FilePath}");
+                                continue;
+                            }
 
+                            // Sugeruj kategorię na podstawie embeddingu, ograniczając do profili danej modelki
                             var suggestionTuple = _profileService.SuggestCategory(sourceEmbedding, SuggestionSimilarityThreshold, modelVM.ModelName);
-                            if (suggestionTuple != null)
+                            if (suggestionTuple != null) // (CategoryProfile suggestedProfile, double similarityToCentroid)
                             {
                                 Models.ProposedMove? move = await CreateProposedMoveAsync(sourceImageEntry, suggestionTuple.Item1, suggestionTuple.Item2, modelDirectoryPath, sourceEmbedding);
                                 if (move != null)
@@ -813,12 +912,19 @@ namespace CosplayManager.ViewModels
                             }
                         }
                     }
-                }
+                    else
+                    {
+                        SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Folder Mix '{mixFolderPath}' nie istnieje, pomijanie.");
+                    }
+                } // koniec pętli po configuredMixedFolderNames
+
                 _lastModelSpecificSuggestions = new List<Models.ProposedMove>(currentModelProposedMoves);
                 _lastScannedModelNameForSuggestions = modelVM.ModelName;
-                RefreshPendingSuggestionCountsFromCache();
+                RefreshPendingSuggestionCountsFromCache(); // Aktualizuje UI
 
-                StatusMessage = $"Zakończono obliczanie sugestii dla '{modelVM.ModelName}'. Znaleziono: {modelVM.PendingSuggestionsCount}.";
+                StatusMessage = $"Zakończono obliczanie sugestii dla '{modelVM.ModelName}'. Znaleziono: {modelVM.PendingSuggestionsCount} potencjalnych dopasowań (powyżej progu).";
+                SimpleFileLogger.Log(StatusMessage);
+
                 if (modelVM.PendingSuggestionsCount > 0)
                 {
                     MessageBox.Show($"Zakończono obliczanie sugestii dla modelki '{modelVM.ModelName}'.\nZnaleziono {modelVM.PendingSuggestionsCount} potencjalnych dopasowań (powyżej progu {SuggestionSimilarityThreshold:F2}).\n\nKliknij prawym przyciskiem na konkretnej postaci, aby sprawdzić jej indywidualne sugestie i przenieść pliki.", "Obliczanie Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -833,34 +939,51 @@ namespace CosplayManager.ViewModels
                 StatusMessage = $"Błąd podczas obliczania sugestii dla '{modelVM.ModelName}': {ex.Message}";
                 SimpleFileLogger.LogError($"Błąd krytyczny w ExecuteMatchModelSpecificAsync dla '{modelVM.ModelName}'", ex);
                 MessageBox.Show($"Wystąpił błąd krytyczny: {ex.Message}", "Błąd Obliczania Sugestii", MessageBoxButton.OK, MessageBoxImage.Error);
-                ClearModelSpecificSuggestionsCache();
-                RefreshPendingSuggestionCountsFromCache();
+                ClearModelSpecificSuggestionsCache(); // W razie błędu, wyczyść cache, bo może być niekompletny
+                // RefreshPendingSuggestionCountsFromCache(); // ClearModelSpecificSuggestionsCache już to robi
             }
         }
 
-        private async Task ExecuteSuggestImagesAsync(object? parameter = null)
+        private async Task ExecuteSuggestImagesAsync(object? parameter = null) // Globalne skanowanie
         {
-            ClearModelSpecificSuggestionsCache();
+            ClearModelSpecificSuggestionsCache(); // Globalne skanowanie powinno mieć swój własny, świeży zestaw wyników
             if (!CanExecuteSuggestImages(null)) { return; }
-            var configuredMixedFolderNames = new HashSet<string>(SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(name => name.Trim()), StringComparer.OrdinalIgnoreCase);
-            if (!configuredMixedFolderNames.Any()) { MessageBox.Show("Zdefiniuj foldery Mix."); return; }
 
-            StatusMessage = "Przeszukiwanie folderów źródłowych w bibliotece (Globalne)...";
-            var allProposedMoves = new List<Models.ProposedMove>();
-            foreach (var mVM in HierarchicalProfilesList) { mVM.PendingSuggestionsCount = 0; foreach (var cp in mVM.CharacterProfiles) cp.PendingSuggestionsCount = 0; }
+            var configuredMixedFolderNames = new HashSet<string>(
+                SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                                     .Select(name => name.Trim()),
+                StringComparer.OrdinalIgnoreCase);
+            if (!configuredMixedFolderNames.Any())
+            {
+                MessageBox.Show("Zdefiniuj nazwy folderów źródłowych (np. Mix, Unsorted) w ustawieniach zaawansowanych.", "Brak folderów źródłowych", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            StatusMessage = "Przeszukiwanie folderów źródłowych we wszystkich modelkach (Globalne Sugestie)...";
+            var allProposedMovesAcrossModels = new List<Models.ProposedMove>();
+
+            // Zeruj liczniki dla wszystkich modelek przed globalnym skanowaniem
+            foreach (var mVM_iterator in HierarchicalProfilesList)
+            {
+                mVM_iterator.PendingSuggestionsCount = 0;
+                foreach (var cp_iterator in mVM_iterator.CharacterProfiles) cp_iterator.PendingSuggestionsCount = 0;
+            }
 
             try
             {
+                // Iteruj po każdej modelce w bibliotece
                 foreach (var modelVM_iterator in HierarchicalProfilesList)
                 {
                     string modelDirectoryPath = Path.Combine(LibraryRootPath, modelVM_iterator.ModelName);
-                    if (!Directory.Exists(modelDirectoryPath)) continue;
+                    if (!Directory.Exists(modelDirectoryPath) || !modelVM_iterator.HasCharacterProfiles) continue; // Pomiń modelki bez folderu lub bez profili postaci
 
+                    SimpleFileLogger.Log($"ExecuteSuggestImagesAsync (Global): Przetwarzanie modelki '{modelVM_iterator.ModelName}'");
                     foreach (var mixFolderNamePattern in configuredMixedFolderNames)
                     {
                         string mixFolderPath = Path.Combine(modelDirectoryPath, mixFolderNamePattern);
                         if (Directory.Exists(mixFolderPath))
                         {
+                            SimpleFileLogger.Log($"ExecuteSuggestImagesAsync (Global): Skanowanie folderu Mix: {mixFolderPath}");
                             foreach (var imagePath in await _fileScannerService.ScanDirectoryAsync(mixFolderPath))
                             {
                                 ImageFileEntry? sourceImageEntry = await _imageMetadataService.ExtractMetadataAsync(imagePath);
@@ -868,69 +991,118 @@ namespace CosplayManager.ViewModels
                                 float[]? sourceEmbedding = await _profileService.GetImageEmbeddingAsync(sourceImageEntry.FilePath);
                                 if (sourceEmbedding == null) continue;
 
+                                // Sugeruj kategorię, ograniczając do profili BIEŻĄCEJ modelki (modelVM_iterator.ModelName)
                                 var suggestionTuple = _profileService.SuggestCategory(sourceEmbedding, SuggestionSimilarityThreshold, modelVM_iterator.ModelName);
                                 if (suggestionTuple != null)
                                 {
                                     Models.ProposedMove? move = await CreateProposedMoveAsync(sourceImageEntry, suggestionTuple.Item1, suggestionTuple.Item2, modelDirectoryPath, sourceEmbedding);
                                     if (move != null)
                                     {
-                                        allProposedMoves.Add(move);
-                                        if (suggestionTuple.Item2 >= SuggestionSimilarityThreshold)
-                                        {
-                                            var charP = modelVM_iterator.CharacterProfiles.FirstOrDefault(cp => cp.CategoryName == move.TargetCategoryProfileName);
-                                            if (charP != null) charP.PendingSuggestionsCount++;
-                                        }
+                                        allProposedMovesAcrossModels.Add(move);
+                                        // Aktualizuj liczniki od razu (opcjonalnie, bo PreviewChangesViewModel i tak filtruje)
+                                        // Ale to może dać feedback użytkownikowi w trakcie długiego skanowania
+                                        // if (move.Similarity >= SuggestionSimilarityThreshold) // Dodatkowe sprawdzenie, choć SuggestCategory już to robi
+                                        // {
+                                        //     var charP = modelVM_iterator.CharacterProfiles.FirstOrDefault(cp => cp.CategoryName == move.TargetCategoryProfileName);
+                                        //     if (charP != null)
+                                        //     {
+                                        //         charP.PendingSuggestionsCount++;
+                                        //         modelVM_iterator.PendingSuggestionsCount = modelVM_iterator.CharacterProfiles.Sum(cp => cp.PendingSuggestionsCount);
+                                        //     }
+                                        // }
                                     }
                                 }
                             }
                         }
                     }
-                    modelVM_iterator.PendingSuggestionsCount = modelVM_iterator.CharacterProfiles.Sum(cp => cp.PendingSuggestionsCount);
-                }
-                StatusMessage = $"Zakończono globalne skanowanie. Znaleziono {allProposedMoves.Count(m => m.Similarity >= SuggestionSimilarityThreshold)} sugestii (powyżej progu).";
-                var filteredGlobalMoves = allProposedMoves.Where(m => m.Similarity >= SuggestionSimilarityThreshold).ToList();
+                } // koniec pętli po modelkach
+
+                StatusMessage = $"Zakończono globalne skanowanie. Znaleziono {allProposedMovesAcrossModels.Count(m => m.Similarity >= SuggestionSimilarityThreshold)} sugestii (powyżej progu).";
+                SimpleFileLogger.Log(StatusMessage);
+
+                var filteredGlobalMoves = allProposedMovesAcrossModels
+                    .Where(m => m.Similarity >= SuggestionSimilarityThreshold)
+                    .ToList();
 
                 if (filteredGlobalMoves.Any())
                 {
                     var previewVM = new PreviewChangesViewModel(filteredGlobalMoves, SuggestionSimilarityThreshold);
                     var previewWindow = new PreviewChangesWindow { DataContext = previewVM };
+                    // Ustawienie Owner dla poprawnego zachowania modalnego
+                    previewWindow.Owner = Application.Current.Windows.OfType<Window>().SingleOrDefault(x => x.IsActive) ?? Application.Current.MainWindow;
                     if (previewWindow is Views.PreviewChangesWindow actualTypedWindow) { actualTypedWindow.SetCloseAction(previewVM); }
-                    previewWindow.Owner = Application.Current.MainWindow;
+
                     bool? dialogOutcome = previewWindow.ShowDialog();
-                    if (dialogOutcome == true) HandleApprovedMoves(previewVM.GetApprovedMoves(), null, null);
-                    else StatusMessage = "Anulowano zmiany (Globalne).";
+                    if (dialogOutcome == true)
+                    {
+                        // Przekazujemy null dla specificModelVM i specificCharacterProfile, bo to operacja globalna
+                        HandleApprovedMoves(previewVM.GetApprovedMoves(), null, null);
+                    }
+                    else
+                    {
+                        StatusMessage = "Anulowano zmiany (Globalne Sugestie).";
+                        SimpleFileLogger.Log(StatusMessage);
+                    }
+                    // Po zamknięciu okna Preview, warto odświeżyć wszystkie liczniki, bo nie wiemy, które modele były dotknięte
+                    // Jeśli HandleApprovedMoves nie wyczyściło _lastScannedModelNameForSuggestions, to odświeży tylko ostatni model.
+                    // To jest problematyczne dla globalnego skanowania.
+                    // Globalne skanowanie nie powinno używać _lastModelSpecificSuggestions.
+                    // Po globalnym skanowaniu i przetworzeniu, najlepiej wyczyścić ten cache.
+                    ClearModelSpecificSuggestionsCache(); // Czyści cache i odświeża liczniki do zera.
                 }
-                else MessageBox.Show("Nie znaleziono żadnych pasujących obrazów (powyżej progu).", "Brak sugestii (Globalne)", MessageBoxButton.OK, MessageBoxImage.Information);
+                else
+                {
+                    MessageBox.Show("Nie znaleziono żadnych pasujących obrazów (powyżej progu) podczas globalnego skanowania.", "Brak sugestii (Globalne)", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
             }
             catch (Exception ex)
             {
                 StatusMessage = $"Błąd podczas globalnego wyszukiwania sugestii: {ex.Message}";
                 SimpleFileLogger.LogError("Błąd w ExecuteSuggestImagesAsync (Global)", ex);
+                ClearModelSpecificSuggestionsCache(); // W razie błędu, wyczyść
             }
         }
 
         private async Task ExecuteCheckCharacterSuggestionsAsync(object? parameter)
         {
-            if (!(parameter is CategoryProfile characterProfile)) return;
+            if (!(parameter is CategoryProfile characterProfile))
+            {
+                SimpleFileLogger.LogWarning("ExecuteCheckCharacterSuggestionsAsync: Parametr nie jest CategoryProfile.");
+                return;
+            }
             SimpleFileLogger.Log($"ExecuteCheckCharacterSuggestionsAsync: Rozpoczęto dla postaci '{characterProfile.CategoryName}'.");
-            if (!CanExecuteCheckCharacterSuggestions(characterProfile)) { /*...*/ return; }
+            if (!CanExecuteCheckCharacterSuggestions(characterProfile))
+            {
+                SimpleFileLogger.LogWarning($"ExecuteCheckCharacterSuggestionsAsync: Warunek CanExecute niespełniony dla '{characterProfile.CategoryName}'.");
+                MessageBox.Show($"Nie można sprawdzić sugestii dla '{characterProfile.CategoryName}'.\nMożliwe przyczyny: brak ścieżki biblioteki, brak folderów źródłowych lub profil postaci nie ma obliczonego centroidu.",
+                                "Nie można wykonać",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Warning); // <<< POPRAWKA TUTAJ
+                return;
+            }
 
             string modelName = _profileService.GetModelNameFromCategory(characterProfile.CategoryName);
             List<Models.ProposedMove> suggestionsForThisCharacter;
 
             if (_lastScannedModelNameForSuggestions == modelName && _lastModelSpecificSuggestions.Any())
             {
+                SimpleFileLogger.Log($"ExecuteCheckCharacterSuggestionsAsync: Używanie istniejącego cache'u sugestii dla modelki '{modelName}'.");
                 suggestionsForThisCharacter = _lastModelSpecificSuggestions
                     .Where(move => move.TargetCategoryProfileName.Equals(characterProfile.CategoryName, StringComparison.OrdinalIgnoreCase) &&
                                    move.Similarity >= SuggestionSimilarityThreshold)
                     .ToList();
+                SimpleFileLogger.Log($"ExecuteCheckCharacterSuggestionsAsync: Z cache'u dla '{characterProfile.CategoryName}' znaleziono {suggestionsForThisCharacter.Count} sugestii (po progu).");
             }
             else
             {
-                // Fallback - skanowanie dedykowane
+                SimpleFileLogger.Log($"ExecuteCheckCharacterSuggestionsAsync: Cache nieaktualny lub pusty dla modelki '{modelName}'. Wykonywanie dedykowanego skanowania dla postaci '{characterProfile.CategoryName}'.");
                 StatusMessage = $"Skanowanie dedykowane dla '{characterProfile.CategoryName}'...";
                 suggestionsForThisCharacter = new List<Models.ProposedMove>();
-                var configuredMixedFolderNames = new HashSet<string>(SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(name => name.Trim()), StringComparer.OrdinalIgnoreCase);
+
+                var configuredMixedFolderNames = new HashSet<string>(
+                    SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                                         .Select(name => name.Trim()),
+                    StringComparer.OrdinalIgnoreCase);
                 string modelDirectoryPath = Path.Combine(LibraryRootPath, modelName);
 
                 if (Directory.Exists(modelDirectoryPath) && configuredMixedFolderNames.Any())
@@ -945,6 +1117,7 @@ namespace CosplayManager.ViewModels
                                 ImageFileEntry? sourceImageEntry = await _imageMetadataService.ExtractMetadataAsync(imagePath);
                                 if (sourceImageEntry == null) continue;
                                 float[]? sourceEmbedding = await _profileService.GetImageEmbeddingAsync(sourceImageEntry.FilePath);
+
                                 if (sourceEmbedding == null || characterProfile.CentroidEmbedding == null) continue;
 
                                 double similarityToCharCentroid = Utils.MathUtils.CalculateCosineSimilarity(sourceEmbedding, characterProfile.CentroidEmbedding);
@@ -960,48 +1133,56 @@ namespace CosplayManager.ViewModels
                         }
                     }
                 }
-                StatusMessage = $"Zakończono dedykowane skanowanie dla '{characterProfile.CategoryName}'.";
-                _lastModelSpecificSuggestions.RemoveAll(m => m.TargetCategoryProfileName == characterProfile.CategoryName); // Usuń stare dla tej postaci
-                _lastModelSpecificSuggestions.AddRange(suggestionsForThisCharacter); // Dodaj nowe
+                StatusMessage = $"Zakończono dedykowane skanowanie dla '{characterProfile.CategoryName}'. Znaleziono: {suggestionsForThisCharacter.Count}.";
+                SimpleFileLogger.Log(StatusMessage);
+
+                if (_lastScannedModelNameForSuggestions != modelName)
+                {
+                    _lastModelSpecificSuggestions.Clear();
+                }
+                _lastModelSpecificSuggestions.RemoveAll(m => m.TargetCategoryProfileName == characterProfile.CategoryName);
+                _lastModelSpecificSuggestions.AddRange(suggestionsForThisCharacter);
                 _lastScannedModelNameForSuggestions = modelName;
             }
 
-            RefreshPendingSuggestionCountsFromCache();
+            var actualSuggestionsToShowInDialog = suggestionsForThisCharacter; // Lista jest już przefiltrowana lub nowo utworzona
 
-            var actualSuggestionsToShow = _lastModelSpecificSuggestions
-                .Where(m => m.TargetCategoryProfileName.Equals(characterProfile.CategoryName, StringComparison.OrdinalIgnoreCase) &&
-                            m.Similarity >= SuggestionSimilarityThreshold)
-                .ToList();
-
-            if (actualSuggestionsToShow.Any())
+            if (actualSuggestionsToShowInDialog.Any())
             {
-                var previewVM = new PreviewChangesViewModel(actualSuggestionsToShow, SuggestionSimilarityThreshold);
+                var previewVM = new PreviewChangesViewModel(actualSuggestionsToShowInDialog, SuggestionSimilarityThreshold);
                 var previewWindow = new PreviewChangesWindow { DataContext = previewVM };
+                previewWindow.Owner = Application.Current.Windows.OfType<Window>().SingleOrDefault(x => x.IsActive) ?? Application.Current.MainWindow;
                 if (previewWindow is Views.PreviewChangesWindow actualTypedWindow) { actualTypedWindow.SetCloseAction(previewVM); }
-                previewWindow.Owner = Application.Current.MainWindow;
+
                 bool? dialogOutcome = previewWindow.ShowDialog();
-                if (dialogOutcome == true) HandleApprovedMoves(previewVM.GetApprovedMoves(), null, characterProfile);
-                else StatusMessage = $"Anulowano sprawdzanie sugestii dla '{characterProfile.CategoryName}'.";
+                if (dialogOutcome == true)
+                {
+                    ModelDisplayViewModel? parentModelVM = HierarchicalProfilesList.FirstOrDefault(m => m.CharacterProfiles.Contains(characterProfile));
+                    HandleApprovedMoves(previewVM.GetApprovedMoves(), parentModelVM, characterProfile);
+                }
+                else
+                {
+                    StatusMessage = $"Anulowano sprawdzanie sugestii dla '{characterProfile.CategoryName}'.";
+                    SimpleFileLogger.Log(StatusMessage);
+                }
             }
             else
             {
                 MessageBox.Show($"Nie znaleziono sugestii (powyżej progu {SuggestionSimilarityThreshold:F2}) dla '{characterProfile.CategoryName}'.", "Brak Sugestii", MessageBoxButton.OK, MessageBoxImage.Information);
             }
+            RefreshPendingSuggestionCountsFromCache();
         }
 
         private void RefreshPendingSuggestionCountsFromCache()
         {
             SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Próba odświeżenia liczników. Obecny próg: {SuggestionSimilarityThreshold:F4}. Nazwa cachowanej modelki: '{_lastScannedModelNameForSuggestions ?? "BRAK"}'. Liczba sugestii w _lastModelSpecificSuggestions: {_lastModelSpecificSuggestions?.Count ?? -1}");
 
-            // Jeśli _lastScannedModelNameForSuggestions jest null lub pusty, oznacza to, że
-            // żadne sugestie specyficzne dla modelu nie są buforowane lub pamięć podręczna została jawnie wyczyszczona.
-            // W takim przypadku wszystkie oczekujące liczniki powinny zostać wyzerowane.
             if (string.IsNullOrEmpty(_lastScannedModelNameForSuggestions))
             {
                 SimpleFileLogger.Log("RefreshPendingSuggestionCountsFromCache: Brak nazwy cachowanej modelki lub cache wyczyszczony. Zerowanie liczników dla wszystkich modelek.");
                 foreach (var modelVM_iterator in HierarchicalProfilesList)
                 {
-                    if (modelVM_iterator.PendingSuggestionsCount != 0) // Loguj tylko jeśli faktycznie coś zmieniasz
+                    if (modelVM_iterator.PendingSuggestionsCount != 0)
                     {
                         SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Zerowanie licznika dla modelki '{modelVM_iterator.ModelName}' (miała {modelVM_iterator.PendingSuggestionsCount}).");
                     }
@@ -1011,27 +1192,19 @@ namespace CosplayManager.ViewModels
                         charProfile_iterator.PendingSuggestionsCount = 0;
                     }
                 }
-                // StatusMessage = "Gotowy. Cache sugestii modelu jest pusty."; // Można dodać, jeśli potrzebne
-                return; // Zakończ po wyczyszczeniu
+                return;
             }
 
-            // Znajdź ModelDisplayViewModel dla nazwy modelki z pamięci podręcznej
             var modelVMToUpdate = HierarchicalProfilesList.FirstOrDefault(m => m.ModelName.Equals(_lastScannedModelNameForSuggestions, StringComparison.OrdinalIgnoreCase));
 
-            // Jeśli modelka nie jest już na liście hierarchicznej (np. została usunięta), nie możemy zaktualizować jej liczników.
-            // Pamięć podręczna _lastModelSpecificSuggestions i _lastScannedModelNameForSuggestions może być w tym przypadku nieaktualna.
             if (modelVMToUpdate == null)
             {
-                SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Cachowana modelka '{_lastScannedModelNameForSuggestions}' nie została znaleziona na liście hierarchicznej. Liczniki nie zostaną odświeżone. Możliwe, że modelka została usunięta lub jej nazwa zmieniona.");
-                // Można rozważyć wyczyszczenie pamięci podręcznej, jeśli modelki nie znaleziono, aby uniknąć niespójności.
-                // ClearModelSpecificSuggestionsCache(); // To mogłoby być zbyt agresywne, jeśli to tymczasowy stan UI.
+                SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Cachowana modelka '{_lastScannedModelNameForSuggestions}' nie została znaleziona na liście hierarchicznej. Liczniki nie zostaną odświeżone.");
                 return;
             }
 
             SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Rozpoczynam odświeżanie dla modelki '{modelVMToUpdate.ModelName}'.");
 
-            // Wyzeruj liczniki dla INNYCH modelek, aby upewnić się, że tylko _lastScannedModelNameForSuggestions
-            // wyświetla liczniki z tej konkretnej pamięci podręcznej.
             foreach (var otherModelVM in HierarchicalProfilesList.Where(m => m.ModelName != modelVMToUpdate.ModelName))
             {
                 if (otherModelVM.PendingSuggestionsCount > 0)
@@ -1045,12 +1218,10 @@ namespace CosplayManager.ViewModels
                 }
             }
 
-            // Zaktualizuj liczniki dla konkretnej modelki na podstawie pamięci podręcznej
             int totalSuggestionsForThisModelAfterFilteringByThreshold = 0;
             foreach (var charProfile in modelVMToUpdate.CharacterProfiles)
             {
                 int oldCount = charProfile.PendingSuggestionsCount;
-                // Policz sugestie z pamięci podręcznej pasujące do tego profilu postaci i przekraczające obecny próg podobieństwa
                 charProfile.PendingSuggestionsCount = _lastModelSpecificSuggestions
                     .Count(move => move.TargetCategoryProfileName.Equals(charProfile.CategoryName, StringComparison.OrdinalIgnoreCase) &&
                                    move.Similarity >= SuggestionSimilarityThreshold);
@@ -1071,6 +1242,7 @@ namespace CosplayManager.ViewModels
             SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Zakończono odświeżanie dla modelki '{modelVMToUpdate.ModelName}'. Nowy PendingSuggestionsCount (suma postaci): {modelVMToUpdate.PendingSuggestionsCount}.");
         }
 
+
         private async void HandleApprovedMoves(List<Models.ProposedMove> approvedMoves, ModelDisplayViewModel? specificModelVM, CategoryProfile? specificCharacterProfile)
         {
             StatusMessage = "Przetwarzanie zatwierdzonych operacji...";
@@ -1082,7 +1254,7 @@ namespace CosplayManager.ViewModels
             {
                 string sourceFilePath = move.SourceImage.FilePath;
                 string finalTargetPathForOperation = move.ProposedTargetPath;
-                ProposedMoveActionType action = move.Action; // Teraz ta wartość powinna być poprawna
+                ProposedMoveActionType action = move.Action;
                 bool operationOnFileSuccessful = false;
                 bool sourceFileToDelete = false;
 
@@ -1259,13 +1431,24 @@ namespace CosplayManager.ViewModels
 
             if (_lastScannedModelNameForSuggestions != null && processedSourceFilePaths.Any())
             {
+                int beforeRemoveCount = _lastModelSpecificSuggestions.Count;
                 _lastModelSpecificSuggestions.RemoveAll(s => processedSourceFilePaths.Contains(s.SourceImage.FilePath));
+                SimpleFileLogger.Log($"HandleApprovedMoves: Usunięto {beforeRemoveCount - _lastModelSpecificSuggestions.Count} przetworzonych sugestii z _lastModelSpecificSuggestions. Pozostało: {_lastModelSpecificSuggestions.Count}.");
             }
+
+            SimpleFileLogger.Log("HandleApprovedMoves: Odświeżanie liczników sugestii (1) na podstawie cache'u pomniejszonego o przetworzone elementy.");
             RefreshPendingSuggestionCountsFromCache();
 
             if (changedProfileNamesForRefresh.Any())
             {
+                SimpleFileLogger.Log("HandleApprovedMoves: Rozpoczynanie odświeżania profili, które uległy zmianie.");
+                _isRefreshingProfilesPostMove = true;
                 await RefreshProfilesAsync(changedProfileNamesForRefresh.Distinct().ToList());
+                _isRefreshingProfilesPostMove = false;
+                SimpleFileLogger.Log("HandleApprovedMoves: Zakończono odświeżanie profili.");
+
+                SimpleFileLogger.Log("HandleApprovedMoves: Ponowne odświeżanie liczników sugestii (2) po przebudowie profili, używając zachowanego cache'u sugestii.");
+                RefreshPendingSuggestionCountsFromCache();
             }
 
             string summaryMsg = $"Operacje zakończone.\nWykonano akcji: {successCount}\n- Pominięto (istniejący plik lepszy/taki sam lub problem z metadanymi): {skippedDueToQualityCount + otherSkippedCount}\nBłędy operacji na plikach (kopiowanie/nadpisywanie): {copyErrorCount}\nBłędy usuwania plików źródłowych: {deleteErrorCount}";
@@ -1278,30 +1461,50 @@ namespace CosplayManager.ViewModels
 
         private async Task RefreshProfilesAsync(List<string> profileNamesToRefresh)
         {
-            if (string.IsNullOrWhiteSpace(LibraryRootPath) || !Directory.Exists(LibraryRootPath)) { return; }
-            await Application.Current.Dispatcher.InvokeAsync(() => StatusMessage = "Odświeżanie profili...");
-            bool changed = false;
+            if (string.IsNullOrWhiteSpace(LibraryRootPath) || !Directory.Exists(LibraryRootPath))
+            {
+                SimpleFileLogger.LogWarning("RefreshProfilesAsync: Ścieżka biblioteki nie jest ustawiona lub nie istnieje. Pomijanie odświeżania profili.");
+                return;
+            }
+            await Application.Current.Dispatcher.InvokeAsync(() => StatusMessage = "Odświeżanie zmodyfikowanych profili...");
+            SimpleFileLogger.Log($"RefreshProfilesAsync: Rozpoczęto odświeżanie {profileNamesToRefresh.Count} profili.");
+            bool changedAnythingSignificant = false;
             foreach (var profileName in profileNamesToRefresh)
             {
                 var (model, character) = ParseCategoryName(profileName);
                 string charPath = Path.Combine(LibraryRootPath, model, character);
                 if (Directory.Exists(charPath))
                 {
-                    var entries = (await Task.WhenAll(Directory.GetFiles(charPath)
-                        .Where(f => _fileScannerService.IsExtensionSupported(Path.GetExtension(f)))
-                        .Select(p => _imageMetadataService.ExtractMetadataAsync(p))))
-                        .Where(e => e != null).ToList();
-                    await _profileService.GenerateProfileAsync(profileName, entries!); // Dodano '!' dla pewności non-null
-                    changed = true;
+                    SimpleFileLogger.Log($"RefreshProfilesAsync: Odświeżanie profilu '{profileName}' z folderu '{charPath}'.");
+                    // Używamy Task.Run, aby uniknąć blokowania wątku UI na długo przy dużej liczbie plików
+                    var entries = await Task.Run(async () =>
+                        (await Task.WhenAll(Directory.GetFiles(charPath)
+                            .Where(f => _fileScannerService.IsExtensionSupported(Path.GetExtension(f)))
+                            .Select(p => _imageMetadataService.ExtractMetadataAsync(p))))
+                            .Where(e => e != null).ToList()
+                    );
+
+                    await _profileService.GenerateProfileAsync(profileName, entries!);
+                    changedAnythingSignificant = true;
                 }
-                else if (_profileService.GetProfile(profileName) != null)
+                else if (_profileService.GetProfile(profileName) != null) // Profil istnieje, ale folder zniknął
                 {
-                    await _profileService.GenerateProfileAsync(profileName, new List<ImageFileEntry>());
-                    changed = true;
+                    SimpleFileLogger.LogWarning($"RefreshProfilesAsync: Folder dla profilu '{profileName}' ('{charPath}') nie istnieje, ale profil tak. Czyszczenie profilu.");
+                    await _profileService.GenerateProfileAsync(profileName, new List<ImageFileEntry>()); // Wyczyść profil
+                    changedAnythingSignificant = true;
                 }
             }
-            if (changed) await ExecuteLoadProfilesAsync();
-            else await Application.Current.Dispatcher.InvokeAsync(() => StatusMessage = "Profile aktualne.");
+
+            if (changedAnythingSignificant)
+            {
+                SimpleFileLogger.Log("RefreshProfilesAsync: Wykryto znaczące zmiany w profilach, przeładowywanie całej listy profili.");
+                await ExecuteLoadProfilesAsync(); // To przebuduje HierarchicalProfilesList i może wyczyścić cache sugestii (zależnie od flagi)
+            }
+            else
+            {
+                SimpleFileLogger.Log("RefreshProfilesAsync: Nie wykryto znaczących zmian, nie ma potrzeby pełnego przeładowania profili.");
+                await Application.Current.Dispatcher.InvokeAsync(() => StatusMessage = "Profile aktualne.");
+            }
         }
 
         private string GenerateUniqueTargetPath(string targetDirectory, string originalFileName, string suffixBase = "_conflict")
@@ -1309,37 +1512,59 @@ namespace CosplayManager.ViewModels
             string baseName = Path.GetFileNameWithoutExtension(originalFileName);
             string extension = Path.GetExtension(originalFileName);
             int counter = 1;
+            // Ogranicz długość nazwy bazowej, aby uniknąć problemów z maksymalną długością ścieżki
             string safeBaseName = baseName.Length > 200 ? baseName.Substring(0, 200) : baseName;
-            string finalTargetPath = Path.Combine(targetDirectory, $"{safeBaseName}{suffixBase}{counter}{extension}");
-            while (File.Exists(finalTargetPath))
+            string finalTargetPath;
+
+            do
             {
-                if (counter > 999) return Path.Combine(targetDirectory, $"{safeBaseName}_{Guid.NewGuid().ToString("N").Substring(0, 8)}{extension}");
+                string newFileName = $"{safeBaseName}{suffixBase}{counter}{extension}";
+                finalTargetPath = Path.Combine(targetDirectory, newFileName);
+                if (counter > 9999) // Zabezpieczenie przed nieskończoną pętlą
+                {
+                    newFileName = $"{safeBaseName}_{Guid.NewGuid().ToString("N").Substring(0, 8)}{extension}";
+                    finalTargetPath = Path.Combine(targetDirectory, newFileName);
+                    SimpleFileLogger.LogWarning($"GenerateUniqueTargetPath: Przekroczono limit prób dla suffixu '{suffixBase}'. Użyto GUID: {newFileName}");
+                    break;
+                }
                 counter++;
-                finalTargetPath = Path.Combine(targetDirectory, $"{safeBaseName}{suffixBase}{counter}{extension}");
-            }
+            } while (File.Exists(finalTargetPath));
+
             return finalTargetPath;
         }
 
         private async Task ExecuteRemoveModelTreeAsync(object? parameter)
         {
             if (!(parameter is ModelDisplayViewModel modelVM)) return;
-            var result = MessageBox.Show($"Czy na pewno chcesz usunąć całą modelkę '{modelVM.ModelName}' wraz ze wszystkimi jej profilami postaci ({modelVM.CharacterProfiles.Count})?",
+
+            var result = MessageBox.Show($"Czy na pewno chcesz usunąć całą modelkę '{modelVM.ModelName}' wraz ze wszystkimi jej profilami postaci ({modelVM.CharacterProfiles.Count}) z systemu profili?\n\nTa operacja NIE usuwa plików z dysku.",
                                          "Potwierdź usunięcie modelki", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (result == MessageBoxResult.Yes)
             {
                 StatusMessage = $"Usuwanie modelki '{modelVM.ModelName}'...";
+                SimpleFileLogger.Log($"ExecuteRemoveModelTreeAsync: Rozpoczęto usuwanie modelki '{modelVM.ModelName}'.");
                 bool success = await _profileService.RemoveAllProfilesForModelAsync(modelVM.ModelName);
                 if (success)
                 {
-                    StatusMessage = $"Modelka '{modelVM.ModelName}' i jej profile zostały usunięte.";
-                    ClearModelSpecificSuggestionsCache();
-                    if (SelectedProfile != null && _profileService.GetModelNameFromCategory(SelectedProfile.CategoryName) == modelVM.ModelName) SelectedProfile = null;
-                    await ExecuteLoadProfilesAsync();
+                    StatusMessage = $"Modelka '{modelVM.ModelName}' i jej profile zostały usunięte z systemu profili.";
+                    SimpleFileLogger.Log(StatusMessage);
+                    // Jeśli usunięta modelka była tą, dla której mieliśmy cache sugestii, wyczyść go
+                    if (_lastScannedModelNameForSuggestions == modelVM.ModelName)
+                    {
+                        ClearModelSpecificSuggestionsCache();
+                    }
+                    // Jeśli usunięto modelkę, która zawierała zaznaczony profil postaci
+                    if (SelectedProfile != null && _profileService.GetModelNameFromCategory(SelectedProfile.CategoryName) == modelVM.ModelName)
+                    {
+                        SelectedProfile = null;
+                    }
+                    await ExecuteLoadProfilesAsync(); // Przeładuj, aby usunąć z UI
                 }
                 else
                 {
-                    StatusMessage = $"Nie udało się całkowicie usunąć modelki '{modelVM.ModelName}'. Sprawdź logi.";
-                    await ExecuteLoadProfilesAsync();
+                    StatusMessage = $"Nie udało się całkowicie usunąć modelki '{modelVM.ModelName}' z systemu profili. Sprawdź logi.";
+                    SimpleFileLogger.LogError(StatusMessage, null);
+                    await ExecuteLoadProfilesAsync(); // Mimo wszystko przeładuj, może coś się usunęło
                 }
             }
         }
