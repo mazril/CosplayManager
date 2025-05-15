@@ -1,0 +1,105 @@
+﻿<mah:MetroWindow x:Class="CosplayManager.Views.PreviewChangesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:mah="http://metro.mahapps.com/winfx/xaml/controls"
+        xmlns:iconPacks="http://metro.mahapps.com/winfx/xaml/iconpacks"
+        xmlns:viewModels="clr-namespace:CosplayManager.ViewModels" 
+        xmlns:converters="clr-namespace:CosplayManager.Converters"
+        mc:Ignorable="d"
+        Title="Podgląd Proponowanych Zmian" Height="600" Width="950"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        GlowBrush="{DynamicResource MahApps.Brushes.Accent}"
+        BorderThickness="1">
+
+    <mah:MetroWindow.Resources>
+        <ResourceDictionary>
+            <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter"/>
+            <converters:InverseBooleanConverter x:Key="InverseBooleanConverter"/>
+            <converters:NullToBoolConverter x:Key="NullToBoolConverter"/>
+        </ResourceDictionary>
+    </mah:MetroWindow.Resources>
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+            <TextBlock Text="Próg podobieństwa:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <Slider Minimum="0.5" Maximum="1.0" Width="200"
+                    Value="{Binding CurrentSimilarityThreshold, UpdateSourceTrigger=PropertyChanged}" 
+                    SmallChange="0.01" LargeChange="0.05" TickFrequency="0.01" IsSnapToTickEnabled="True"
+                    mah:SliderHelper.TrackFillBrush="{DynamicResource MahApps.Brushes.Accent}"
+                    VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding CurrentSimilarityThreshold, StringFormat={}{0:P0}}" VerticalAlignment="Center" Margin="10,0,0,0" MinWidth="30"/>
+            <Button Content="Odśwież" Command="{Binding RefreshCommand}" Margin="20,0,0,0" Padding="10,2" VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <ListView x:Name="ProposedMovesListView" Grid.Row="1" ItemsSource="{Binding ProposedMovesList}" SelectionMode="Extended" AlternationCount="2" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Zatwierdź?" Width="80">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding IsApprovedForMove}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Miniatura Źródła" Width="110">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <Image Source="{Binding SourceThumbnail}" MaxWidth="100" MaxHeight="100" Stretch="Uniform" ToolTip="{Binding SourceImage.FilePath}"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Plik Źródłowy" Width="200" DisplayMemberBinding="{Binding SourceImage.FileName}"/>
+                    <GridViewColumn Header="Podobieństwo" Width="100">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Similarity, StringFormat={}{0:P1}}" HorizontalAlignment="Right"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Miniatura Celu" Width="110">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <Image Source="{Binding TargetThumbnail}" MaxWidth="100" MaxHeight="100" Stretch="Uniform" ToolTip="{Binding TargetImage.FilePath}"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Proponowana Ścieżka / Istniejący Cel" DisplayMemberBinding="{Binding ProposedTargetPath}" />
+                </GridView>
+            </ListView.View>
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem" BasedOn="{StaticResource {x:Type ListViewItem}}">
+                    <Setter Property="Padding" Value="3"/>
+                    <Style.Triggers>
+                        <Trigger Property="ItemsControl.AlternationIndex" Value="1">
+                            <Setter Property="Background" Value="{DynamicResource MahApps.Brushes.Gray9}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background" Value="{DynamicResource MahApps.Brushes.Accent2}" />
+                            <Setter Property="Foreground" Value="White" />
+                        </Trigger>
+                        <DataTrigger Binding="{Binding TargetImage}" Value="{x:Null}">
+                            <Setter Property="FontStyle" Value="Italic"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsApprovedForMove}" Value="False">
+                            <Setter Property="Opacity" Value="0.6"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ListView.ItemContainerStyle>
+        </ListView>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Zatwierdź Zaznaczone" Command="{Binding ConfirmCommand}" IsDefault="True" Margin="0,0,10,0" Style="{StaticResource MahApps.Styles.Button.Dialogs.Accent}" Padding="15,5"/>
+            <Button Content="Anuluj" Command="{Binding CancelCommand}" IsCancel="True" Style="{StaticResource MahApps.Styles.Button.Dialogs}" Padding="15,5"/>
+        </StackPanel>
+    </Grid>
+</mah:MetroWindow>
