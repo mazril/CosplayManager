@@ -1,6 +1,6 @@
 ﻿// Plik: Models/CategoryProfile.cs
-using CosplayManager.Services; // Dla SimpleFileLogger
-using CosplayManager.Utils;   // Potrzebne dla MathUtils
+using CosplayManager.Services;
+using CosplayManager.Utils;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -58,9 +58,19 @@ namespace CosplayManager.Models
         [JsonIgnore]
         public bool HasPendingSuggestions => PendingSuggestionsCount > 0;
 
+        // NOWA WŁAŚCIWOŚĆ SYGNALIZUJĄCA MOŻLIWOŚĆ PODZIAŁU
+        private bool _hasSplitSuggestion;
+        [JsonIgnore] // Nie chcemy tego serializować, to stan tymczasowy analizy
+        public bool HasSplitSuggestion
+        {
+            get => _hasSplitSuggestion;
+            set => SetProperty(ref _hasSplitSuggestion, value);
+        }
+
 
         public CategoryProfile()
         {
+            _hasSplitSuggestion = false; // Domyślnie false
         }
 
         [JsonConstructor]
@@ -71,12 +81,12 @@ namespace CosplayManager.Models
             ImageCountInProfile = imageCountInProfile;
             SourceImagePaths = sourceImagePaths ?? new List<string>();
             PendingSuggestionsCount = 0;
+            _hasSplitSuggestion = false; // Domyślnie false
         }
         public CategoryProfile(string categoryName) : this(categoryName, null, 0, new List<string>())
         {
         }
 
-        // ZMODYFIKOWANA METODA UpdateCentroid
         public void UpdateCentroid(List<float[]> allEmbeddings, List<string> allImagePaths, double outlierSimilarityThreshold = 0.75)
         {
             if (allEmbeddings == null || !allEmbeddings.Any(e => e != null && e.Length > 0))
@@ -97,7 +107,7 @@ namespace CosplayManager.Models
                 if (embedding != null && embedding.Length > 0)
                 {
                     if (embeddingLength == 0) embeddingLength = embedding.Length;
-                    if (embedding.Length == embeddingLength) // Upewnij się, że wszystkie wektory mają tę samą długość
+                    if (embedding.Length == embeddingLength)
                     {
                         validInitialEmbeddings.Add((embedding, allImagePaths[i]));
                     }
@@ -117,24 +127,21 @@ namespace CosplayManager.Models
                 return;
             }
 
-            // Krok 1: Oblicz wstępny centroid ze wszystkich poprawnych embeddingów
             float[]? preliminaryCentroid = CalculateAverageEmbedding(validInitialEmbeddings.Select(item => item.Embedding).ToList());
 
             if (preliminaryCentroid == null || preliminaryCentroid.Length == 0)
             {
                 SimpleFileLogger.LogError($"UpdateCentroid dla '{CategoryName}': Nie udało się obliczyć wstępnego centroidu. Używam wszystkich embeddingów bez filtrowania skrajnych.", null);
-                // W przypadku błędu, wracamy do starej logiki - uśredniania wszystkiego co poprawne
                 SetProfileData(validInitialEmbeddings.Select(item => item.Embedding).ToList(), validInitialEmbeddings.Select(item => item.Path).ToList());
                 return;
             }
 
             SimpleFileLogger.Log($"UpdateCentroid dla '{CategoryName}': Wstępny centroid obliczony z {validInitialEmbeddings.Count} obrazów.");
 
-            // Krok 2 i 3: Zidentyfikuj i odfiltruj skrajne wektory
             var filteredEmbeddingsWithPaths = new List<(float[] Embedding, string Path)>();
             int outliersCount = 0;
 
-            if (validInitialEmbeddings.Count <= 2) // Jeśli mamy bardzo mało obrazów, nie odrzucaj skrajnych, bo centroid może być niestabilny
+            if (validInitialEmbeddings.Count <= 2)
             {
                 SimpleFileLogger.Log($"UpdateCentroid dla '{CategoryName}': Mniej niż 3 obrazy ({validInitialEmbeddings.Count}), pomijanie filtrowania skrajnych wektorów.");
                 filteredEmbeddingsWithPaths.AddRange(validInitialEmbeddings);
@@ -156,17 +163,14 @@ namespace CosplayManager.Models
                 }
             }
 
-
             if (!filteredEmbeddingsWithPaths.Any())
             {
                 SimpleFileLogger.LogWarning($"UpdateCentroid dla '{CategoryName}': Po filtrowaniu skrajnych nie pozostały żadne embeddingi (odrzucono {outliersCount}). Używam wstępnego centroidu z {validInitialEmbeddings.Count} obrazów.");
-                // Jeśli wszystko zostało odrzucone, to coś jest nie tak. Lepiej użyć wstępnego centroidu.
                 SetProfileData(validInitialEmbeddings.Select(item => item.Embedding).ToList(), validInitialEmbeddings.Select(item => item.Path).ToList());
             }
             else
             {
                 SimpleFileLogger.Log($"UpdateCentroid dla '{CategoryName}': Odrzucono {outliersCount} skrajnych embeddingów. Pozostało {filteredEmbeddingsWithPaths.Count} do obliczenia finalnego centroidu.");
-                // Krok 4: Oblicz ostateczny centroid z odfiltrowanych wektorów
                 SetProfileData(filteredEmbeddingsWithPaths.Select(item => item.Embedding).ToList(), filteredEmbeddingsWithPaths.Select(item => item.Path).ToList());
             }
         }
@@ -215,12 +219,11 @@ namespace CosplayManager.Models
             float[]? newCentroid = CalculateAverageEmbedding(finalEmbeddings);
 
             SetProperty(ref _centroidEmbedding, newCentroid, nameof(CentroidEmbedding));
-            SetProperty(ref _imageCountInProfile, finalEmbeddings.Count, nameof(ImageCountInProfile)); // Liczba obrazów użytych do finalnego centroidu
-            SetProperty(ref _sourceImagePaths, finalImagePaths, nameof(SourceImagePaths)); // Ścieżki obrazów użytych do finalnego centroidu
+            SetProperty(ref _imageCountInProfile, finalEmbeddings.Count, nameof(ImageCountInProfile));
+            SetProperty(ref _sourceImagePaths, finalImagePaths, nameof(SourceImagePaths));
 
             SimpleFileLogger.Log($"Profil '{CategoryName}' zaktualizowany. Finalny centroid obliczony z {ImageCountInProfile} obrazów. Zapisano {SourceImagePaths.Count} ścieżek źródłowych.");
         }
-
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected virtual void OnPropertyChanged([CallerMemberName] string? propertyName = null)
