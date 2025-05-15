@@ -1031,40 +1031,43 @@ namespace CosplayManager.ViewModels
         private async void HandleApprovedMoves(List<Models.ProposedMove> approvedMoves, ModelDisplayViewModel? specificModelVM, CategoryProfile? specificCharacterProfile)
         {
             StatusMessage = "Przetwarzanie zatwierdzonych operacji...";
-            // ... (liczniki jak poprzednio) ...
             int successCount = 0, copyErrorCount = 0, deleteErrorCount = 0, skippedDueToQualityCount = 0, otherSkippedCount = 0;
             HashSet<string> changedProfileNamesForRefresh = new HashSet<string>();
             List<string> processedSourceFilePaths = new List<string>();
 
-
             foreach (var move in approvedMoves)
             {
                 string sourceFilePath = move.SourceImage.FilePath;
-                // ProposedTargetPath z ProposedMove powinno być już ustawione na docelową ścieżkę operacji
-                // (np. ścieżkę istniejącego pliku do nadpisania, lub nową ścieżkę)
                 string finalTargetPathForOperation = move.ProposedTargetPath;
                 ProposedMoveActionType action = move.Action;
-                bool operationOnFileSuccessful = false; // Czy operacja na pliku (kopiowanie/pominięcie) się udała
-                bool sourceFileToDelete = false; // Czy plik źródłowy powinien zostać usunięty
+                bool operationOnFileSuccessful = false;
+                bool sourceFileToDelete = false;
 
                 SimpleFileLogger.Log($"HandleApprovedMoves: Akcja dla '{sourceFilePath}' -> '{finalTargetPathForOperation}' to: {action}");
 
                 try
                 {
-                    if (string.IsNullOrWhiteSpace(sourceFilePath) || !File.Exists(sourceFilePath)) { otherSkippedCount++; continue; }
+                    if (string.IsNullOrWhiteSpace(sourceFilePath) || !File.Exists(sourceFilePath))
+                    {
+                        SimpleFileLogger.Log($"Pominięto (HandleApprovedMoves): Plik źródłowy '{sourceFilePath}' nie istnieje lub ścieżka jest pusta.");
+                        otherSkippedCount++;
+                        continue;
+                    }
                     string targetDir = Path.GetDirectoryName(finalTargetPathForOperation);
-                    if (string.IsNullOrEmpty(targetDir)) { otherSkippedCount++; continue; }
+                    if (string.IsNullOrEmpty(targetDir))
+                    {
+                        SimpleFileLogger.Log($"Pominięto (HandleApprovedMoves): Nie można ustalić katalogu docelowego dla '{finalTargetPathForOperation}'.");
+                        otherSkippedCount++;
+                        continue;
+                    }
                     Directory.CreateDirectory(targetDir);
 
                     switch (action)
                     {
                         case ProposedMoveActionType.CopyNew:
-                            // CreateProposedMoveAsync powinno zapewnić, że finalTargetPathForOperation nie istnieje
-                            // lub jeśli istnieje, to akcja powinna być ConflictKeepBoth/OverwriteExisting.
-                            // Dla bezpieczeństwa, jeśli jednak plik istnieje, generujemy nową nazwę.
                             if (File.Exists(finalTargetPathForOperation))
                             {
-                                SimpleFileLogger.Log($"OSTRZEŻENIE (CopyNew): Plik docelowy {finalTargetPathForOperation} istnieje, choć nie powinien. Generowanie unikalnej nazwy.");
+                                SimpleFileLogger.Log($"OSTRZEŻENIE (CopyNew): Plik docelowy {finalTargetPathForOperation} istnieje. Generowanie unikalnej nazwy.");
                                 finalTargetPathForOperation = GenerateUniqueTargetPath(targetDir, Path.GetFileName(sourceFilePath), "_new");
                             }
                             File.Copy(sourceFilePath, finalTargetPathForOperation, false);
@@ -1074,57 +1077,96 @@ namespace CosplayManager.ViewModels
                             break;
 
                         case ProposedMoveActionType.OverwriteExisting:
-                            // finalTargetPathForOperation to ścieżka do pliku, który ma być nadpisany
                             SimpleFileLogger.Log($"Nadpisywanie (OverwriteExisting): '{finalTargetPathForOperation}' plikiem '{sourceFilePath}'");
                             GC.Collect(); GC.WaitForPendingFinalizers(); await Task.Delay(100);
-                            File.Copy(sourceFilePath, finalTargetPathForOperation, true); // Nadpisz
+                            File.Copy(sourceFilePath, finalTargetPathForOperation, true);
                             operationOnFileSuccessful = true;
                             sourceFileToDelete = true;
                             break;
 
                         case ProposedMoveActionType.KeepExistingDeleteSource:
-                            // Nic nie kopiujemy, plik docelowy (finalTargetPathForOperation) jest lepszy/taki sam.
                             SimpleFileLogger.Log($"Zachowano istniejący (KeepExistingDeleteSource): '{finalTargetPathForOperation}'. Plik źródłowy '{sourceFilePath}' zostanie usunięty.");
-                            operationOnFileSuccessful = true; // Operacja "zachowania" jest udana
+                            operationOnFileSuccessful = true;
                             sourceFileToDelete = true;
                             skippedDueToQualityCount++;
                             break;
 
                         case ProposedMoveActionType.ConflictKeepBoth:
-                            // finalTargetPathForOperation to ścieżka do istniejącego pliku o tej samej nazwie co źródłowy.
-                            // Porównujemy jakość.
                             ImageFileEntry? sourceMetaConflict = move.SourceImage;
-                            // TargetImage w move powinien być już ustawiony przez CreateProposedMoveAsync na ten istniejący plik
                             ImageFileEntry? targetMetaConflict = move.TargetImage;
+                            string logPrefixConflict = $"Konflikt (ConflictKeepBoth) dla S: '{sourceFilePath}' vs T: '{finalTargetPathForOperation}'";
 
-                            if (sourceMetaConflict != null && targetMetaConflict != null && targetMetaConflict.FilePath == finalTargetPathForOperation &&
-                                sourceMetaConflict.Width > 0 && targetMetaConflict.Width > 0)
+                            bool canCompareByResolution = sourceMetaConflict != null && targetMetaConflict != null &&
+                                                          targetMetaConflict.FilePath.Equals(finalTargetPathForOperation, StringComparison.OrdinalIgnoreCase) &&
+                                                          sourceMetaConflict.Width > 0 && sourceMetaConflict.Height > 0 &&
+                                                          targetMetaConflict.Width > 0 && targetMetaConflict.Height > 0;
+
+                            if (canCompareByResolution)
                             {
                                 long sourceResC = (long)sourceMetaConflict.Width * sourceMetaConflict.Height;
                                 long targetResC = (long)targetMetaConflict.Width * targetMetaConflict.Height;
+                                // Pobieramy rozmiary plików bezpośrednio, na wypadek gdyby metadane były niekompletne
                                 long sourceSizeC = new FileInfo(sourceMetaConflict.FilePath).Length;
                                 long targetSizeC = new FileInfo(targetMetaConflict.FilePath).Length;
 
+
                                 if (sourceResC > targetResC || (sourceResC == targetResC && sourceSizeC > targetSizeC))
                                 {
-                                    SimpleFileLogger.Log($"Konflikt (ConflictKeepBoth): Źródło lepsze. Nadpisywanie '{finalTargetPathForOperation}' plikiem '{sourceFilePath}'.");
+                                    SimpleFileLogger.Log($"{logPrefixConflict}: Źródło lepsze (rozdzielczość/rozmiar). Nadpisywanie.");
                                     GC.Collect(); GC.WaitForPendingFinalizers(); await Task.Delay(100);
-                                    File.Copy(sourceFilePath, finalTargetPathForOperation, true); // Nadpisz plik o tej samej nazwie
+                                    File.Copy(sourceFilePath, finalTargetPathForOperation, true);
+                                    operationOnFileSuccessful = true;
                                 }
                                 else
                                 {
-                                    string uniquePath = GenerateUniqueTargetPath(targetDir, Path.GetFileName(sourceFilePath), "_conflicted");
-                                    File.Copy(sourceFilePath, uniquePath, false);
-                                    SimpleFileLogger.Log($"Konflikt (ConflictKeepBoth): Źródło gorsze/takie samo. Skopiowano '{sourceFilePath}' -> '{uniquePath}'. Plik '{finalTargetPathForOperation}' pozostaje.");
+                                    SimpleFileLogger.Log($"{logPrefixConflict}: Źródło nie jest lepsze (rozdzielczość/rozmiar). Istniejący plik '{finalTargetPathForOperation}' pozostaje. Źródło zostanie usunięte.");
+                                    operationOnFileSuccessful = true;
+                                    skippedDueToQualityCount++;
                                 }
                             }
                             else
                             {
-                                string uniquePath = GenerateUniqueTargetPath(targetDir, Path.GetFileName(sourceFilePath), "_conflict_meta_err");
-                                File.Copy(sourceFilePath, uniquePath, false);
-                                SimpleFileLogger.Log($"Konflikt (ConflictKeepBoth): Brak metadanych do pełnego porównania lub niespójność. Skopiowano '{sourceFilePath}' -> '{uniquePath}'.");
+                                // Brak wystarczających metadanych wymiarów do porównania rozdzielczości.
+                                // Porównaj na podstawie samego rozmiaru pliku na dysku.
+                                SimpleFileLogger.Log($"{logPrefixConflict}: Brak metadanych wymiarów do pełnego porównania. Porównywanie na podstawie rozmiaru pliku.");
+                                try
+                                {
+                                    if (!File.Exists(finalTargetPathForOperation))
+                                    {
+                                        // Sytuacja nieoczekiwana, jeśli TargetImage był ustawiony, a plik nie istnieje.
+                                        // Traktujemy jakby źródło było "lepsze" bo docelowy nie istnieje, więc kopiujemy.
+                                        SimpleFileLogger.LogWarning($"{logPrefixConflict}: Plik docelowy '{finalTargetPathForOperation}' wskazany w TargetImage nie istnieje na dysku! Kopiowanie źródła.");
+                                        GC.Collect(); GC.WaitForPendingFinalizers(); await Task.Delay(100);
+                                        File.Copy(sourceFilePath, finalTargetPathForOperation, false); // Kopiuj jako nowy, bo docelowy "zniknął"
+                                        operationOnFileSuccessful = true;
+                                    }
+                                    else
+                                    {
+                                        long sourceSizeFallback = new FileInfo(sourceFilePath).Length;
+                                        long targetSizeFallback = new FileInfo(finalTargetPathForOperation).Length;
+
+                                        if (sourceSizeFallback > targetSizeFallback)
+                                        {
+                                            SimpleFileLogger.Log($"{logPrefixConflict}: Źródło większe (rozmiar pliku: {sourceSizeFallback} > {targetSizeFallback}). Nadpisywanie.");
+                                            GC.Collect(); GC.WaitForPendingFinalizers(); await Task.Delay(100);
+                                            File.Copy(sourceFilePath, finalTargetPathForOperation, true);
+                                            operationOnFileSuccessful = true;
+                                        }
+                                        else
+                                        {
+                                            SimpleFileLogger.Log($"{logPrefixConflict}: Źródło nie jest większe (rozmiar pliku: {sourceSizeFallback} <= {targetSizeFallback}). Istniejący plik '{finalTargetPathForOperation}' pozostaje. Źródło zostanie usunięte.");
+                                            operationOnFileSuccessful = true;
+                                            skippedDueToQualityCount++; // Można uznać za decyzję jakościową opartą na rozmiarze
+                                        }
+                                    }
+                                }
+                                catch (Exception fileSizeEx)
+                                {
+                                    SimpleFileLogger.LogError($"{logPrefixConflict}: Błąd podczas porównywania rozmiarów plików. Zachowuję ostrożność - istniejący plik '{finalTargetPathForOperation}' pozostaje. Źródło zostanie usunięte.", fileSizeEx);
+                                    operationOnFileSuccessful = true; // Decyzja podjęta (zachowaj istniejący)
+                                    otherSkippedCount++;
+                                }
                             }
-                            operationOnFileSuccessful = true;
                             sourceFileToDelete = true;
                             break;
                     }
@@ -1136,14 +1178,35 @@ namespace CosplayManager.ViewModels
 
                         if (sourceFileToDelete)
                         {
-                            bool deleteOk = false; 
-                            for (int i = 0; i < 3; i++) // Próby usunięcia
+                            bool deleteOk = false;
+                            for (int i = 0; i < 3; i++)
                             {
-                                try { if (i > 0) await Task.Delay(200 * (i + 1)); File.Delete(sourceFilePath); deleteOk = true; break; }
-                                catch (IOException) { if (i == 2) SimpleFileLogger.LogError($"Nie udało się usunąć pliku źródłowego {sourceFilePath} po 3 próbach (IOExc).", null); }
-                                catch (Exception ex) { SimpleFileLogger.LogError($"Błąd przy usuwaniu {sourceFilePath}", ex); break; }
+                                try
+                                {
+                                    if (i > 0) await Task.Delay(200 * (i + 1));
+                                    if (File.Exists(sourceFilePath))
+                                    {
+                                        File.Delete(sourceFilePath);
+                                        SimpleFileLogger.Log($"Usunięto plik źródłowy: {sourceFilePath}");
+                                    }
+                                    else
+                                    {
+                                        SimpleFileLogger.Log($"Plik źródłowy {sourceFilePath} już nie istniał przed próbą usunięcia.");
+                                    }
+                                    deleteOk = true;
+                                    break;
+                                }
+                                catch (IOException ioEx)
+                                {
+                                    if (i == 2) SimpleFileLogger.LogError($"Nie udało się usunąć pliku źródłowego {sourceFilePath} po 3 próbach (IOExc).", ioEx);
+                                }
+                                catch (Exception ex)
+                                {
+                                    SimpleFileLogger.LogError($"Błąd przy usuwaniu {sourceFilePath}", ex);
+                                    break;
+                                }
                             }
-                            if (!deleteOk) deleteErrorCount++;
+                            if (!deleteOk && File.Exists(sourceFilePath)) deleteErrorCount++;
                         }
                         changedProfileNamesForRefresh.Add(move.TargetCategoryProfileName);
                     }
@@ -1152,10 +1215,11 @@ namespace CosplayManager.ViewModels
                 {
                     copyErrorCount++;
                     SimpleFileLogger.LogError($"HandleApprovedMoves: Błąd ogólny operacji dla '{sourceFilePath}' -> '{finalTargetPathForOperation}'. Akcja: {action}", ex);
+                    operationOnFileSuccessful = false;
                 }
             }
 
-            if (_lastScannedModelNameForSuggestions != null)
+            if (_lastScannedModelNameForSuggestions != null && processedSourceFilePaths.Any())
             {
                 _lastModelSpecificSuggestions.RemoveAll(s => processedSourceFilePaths.Contains(s.SourceImage.FilePath));
             }
@@ -1166,8 +1230,9 @@ namespace CosplayManager.ViewModels
                 await RefreshProfilesAsync(changedProfileNamesForRefresh.Distinct().ToList());
             }
 
-            string summaryMsg = $"Operacje zakończone.\nWykonano akcji: {successCount}\n- Pominięto (istniejący plik lepszy/taki sam): {skippedDueToQualityCount}\nBłędy operacji na plikach (kopiowanie/nadpisywanie): {copyErrorCount}\nBłędy usuwania plików źródłowych: {deleteErrorCount}\nInne pominięte (np. błąd metadanych): {otherSkippedCount}";
-            StatusMessage = $"Zakończono. Wykonano: {successCount}, Pominięto(jakość): {skippedDueToQualityCount}, Bł.op.: {copyErrorCount}, Bł.us.: {deleteErrorCount}.";
+            string summaryMsg = $"Operacje zakończone.\nWykonano akcji: {successCount}\n- Pominięto (istniejący plik lepszy/taki sam lub problem z metadanymi): {skippedDueToQualityCount + otherSkippedCount}\nBłędy operacji na plikach (kopiowanie/nadpisywanie): {copyErrorCount}\nBłędy usuwania plików źródłowych: {deleteErrorCount}";
+            StatusMessage = $"Zakończono. Wykonano: {successCount}, Pominięto(jakość/meta): {skippedDueToQualityCount + otherSkippedCount}, Bł.op.: {copyErrorCount}, Bł.us.: {deleteErrorCount}.";
+
             if (changedProfileNamesForRefresh.Any()) StatusMessage += " Profile odświeżone.";
             SimpleFileLogger.Log($"HandleApprovedMoves: {StatusMessage}");
             MessageBox.Show(summaryMsg, "Operacja zakończona", MessageBoxButton.OK, MessageBoxImage.Information);
