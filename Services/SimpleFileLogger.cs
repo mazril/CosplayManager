@@ -48,16 +48,33 @@ namespace CosplayManager.Services
                 lock (LockObj) // Prosta synchronizacja, aby uniknąć problemów z wieloma wątkami piszącymi jednocześnie
                 {
                     // Zapis do pliku z datą i godziną
-                    string logEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} - {message}{Environment.NewLine}";
+                    string logEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} - INFO: {message}{Environment.NewLine}";
                     File.AppendAllText(LogFilePath, logEntry, Encoding.UTF8); // Użyj UTF8 dla polskich znaków
                 }
                 // Opcjonalnie, wypisz też do konsoli debugowania
-                System.Diagnostics.Debug.WriteLine($"LOG: {message}");
+                System.Diagnostics.Debug.WriteLine($"INFO: {message}");
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"FATAL LOGGER ERROR (Log): {ex.Message} for message: {message}");
                 // W przypadku błędu logowania, nie rób nic więcej, aby nie powodować pętli błędów
+            }
+        }
+
+        public static void LogWarning(string message)
+        {
+            try
+            {
+                lock (LockObj)
+                {
+                    string logEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} - WARNING: {message}{Environment.NewLine}";
+                    File.AppendAllText(LogFilePath, logEntry, Encoding.UTF8);
+                }
+                System.Diagnostics.Debug.WriteLine($"WARNING: {message}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"FATAL LOGGER ERROR (LogWarning): {ex.Message} for message: {message}");
             }
         }
 
@@ -75,7 +92,20 @@ namespace CosplayManager.Services
                     errorMessage += $"{Environment.NewLine}Stack Trace (short): {ex.StackTrace.Split(new[] { Environment.NewLine }, StringSplitOptions.None).FirstOrDefault()}";
                 }
             }
-            Log(errorMessage);
+
+            try
+            {
+                lock (LockObj)
+                {
+                    string logEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} - {errorMessage}{Environment.NewLine}";
+                    File.AppendAllText(LogFilePath, logEntry, Encoding.UTF8);
+                }
+                System.Diagnostics.Debug.WriteLine(errorMessage);
+            }
+            catch (Exception loggerEx)
+            {
+                System.Diagnostics.Debug.WriteLine($"FATAL LOGGER ERROR (LogError): {loggerEx.Message} for original error: {message}");
+            }
         }
     }
 }
