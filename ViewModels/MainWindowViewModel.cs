@@ -2,19 +2,17 @@
 using CosplayManager.Models;
 using CosplayManager.Services;
 using CosplayManager.ViewModels.Base;
-using CosplayManager.Views;
-using Microsoft.Win32; // Dla OpenFileDialog
+using CosplayManager.Views; // Potrzebne dla SplitProfileWindow
+using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
-// using Ookii.Dialogs.Wpf;
-
+// using Ookii.Dialogs.Wpf; // Odkomentuj, jeśli używasz
 
 namespace CosplayManager.ViewModels
 {
@@ -51,6 +49,7 @@ namespace CosplayManager.ViewModels
                     OnPropertyChanged(nameof(IsProfileSelected));
                     (RemoveProfileCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (CheckCharacterSuggestionsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+                    (OpenSplitProfileDialogCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged(); // Odśwież dla nowej komendy
                 }
                 if (_selectedProfile == null && oldSelectedProfileName != null &&
                     !_profileService.GetAllProfiles().Any(p => p.CategoryName == oldSelectedProfileName))
@@ -117,6 +116,7 @@ namespace CosplayManager.ViewModels
                     (SuggestImagesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (MatchModelSpecificCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (CheckCharacterSuggestionsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+                    (AnalyzeModelForSplittingCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 }
             }
         }
@@ -134,6 +134,7 @@ namespace CosplayManager.ViewModels
                     (SuggestImagesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (MatchModelSpecificCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (CheckCharacterSuggestionsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+                    (AnalyzeModelForSplittingCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 }
             }
         }
@@ -175,7 +176,8 @@ namespace CosplayManager.ViewModels
         public ICommand MatchModelSpecificCommand { get; }
         public ICommand CheckCharacterSuggestionsCommand { get; }
         public ICommand RemoveModelTreeCommand { get; }
-        public ICommand AnalyzeModelForSplittingCommand { get; } // NOWA KOMENDA
+        public ICommand AnalyzeModelForSplittingCommand { get; }
+        public ICommand OpenSplitProfileDialogCommand { get; }
 
 
         public MainWindowViewModel(
@@ -206,7 +208,8 @@ namespace CosplayManager.ViewModels
             MatchModelSpecificCommand = new AsyncRelayCommand(ExecuteMatchModelSpecificAsync, CanExecuteMatchModelSpecific);
             CheckCharacterSuggestionsCommand = new AsyncRelayCommand(ExecuteCheckCharacterSuggestionsAsync, CanExecuteCheckCharacterSuggestions);
             RemoveModelTreeCommand = new AsyncRelayCommand(ExecuteRemoveModelTreeAsync, CanExecuteRemoveModelTree);
-            AnalyzeModelForSplittingCommand = new AsyncRelayCommand(ExecuteAnalyzeModelForSplittingAsync, CanExecuteAnalyzeModelForSplitting); // NOWA KOMENDA
+            AnalyzeModelForSplittingCommand = new AsyncRelayCommand(ExecuteAnalyzeModelForSplittingAsync, CanExecuteAnalyzeModelForSplitting);
+            OpenSplitProfileDialogCommand = new AsyncRelayCommand(ExecuteOpenSplitProfileDialogAsync, CanExecuteOpenSplitProfileDialog);
         }
 
         private void UpdateCurrentProfileNameForEdit()
@@ -467,7 +470,7 @@ namespace CosplayManager.ViewModels
                 (MatchModelSpecificCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 (CheckCharacterSuggestionsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 (RemoveModelTreeCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
-                (AnalyzeModelForSplittingCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged(); // Odśwież CanExecute dla nowej komendy
+                (AnalyzeModelForSplittingCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
 
                 if (_isRefreshingProfilesPostMove)
                 {
@@ -1541,7 +1544,6 @@ namespace CosplayManager.ViewModels
         // NOWE METODY DLA FUNKCJI "PODZIEL PROFIL MODELKI"
         private bool CanExecuteAnalyzeModelForSplitting(object? parameter)
         {
-            // Można uruchomić, jeśli wybrano modelkę i ma ona jakiekolwiek profile postaci
             return parameter is ModelDisplayViewModel modelVM && modelVM.HasCharacterProfiles;
         }
 
@@ -1557,7 +1559,6 @@ namespace CosplayManager.ViewModels
             SimpleFileLogger.Log($"ExecuteAnalyzeModelForSplittingAsync: Rozpoczęto dla modelki '{modelVM.ModelName}'.");
             int profilesMarkedForSplit = 0;
 
-            // Najpierw wyczyść poprzednie oznaczenia 'HasSplitSuggestion' dla tej modelki
             foreach (var existingCharProfile in modelVM.CharacterProfiles)
             {
                 existingCharProfile.HasSplitSuggestion = false;
@@ -1565,10 +1566,8 @@ namespace CosplayManager.ViewModels
 
             foreach (var characterProfile in modelVM.CharacterProfiles.ToList())
             {
-                // Podstawowe warunki, aby w ogóle rozważać podział
-                // Np. profil musi mieć wystarczająco dużo obrazów
-                const int minImagesForSplitConsideration = 10; // Przykładowy próg minimalnej liczby obrazów
-                const int minImagesForSignificantSplit = 20; // Przykładowy próg dla placeholderu, że "coś znaleziono"
+                const int minImagesForSplitConsideration = 10;
+                const int minImagesForSignificantSplit = 20;
 
                 if (characterProfile.SourceImagePaths == null || characterProfile.SourceImagePaths.Count < minImagesForSplitConsideration)
                 {
@@ -1578,7 +1577,6 @@ namespace CosplayManager.ViewModels
                 }
 
                 List<float[]> allEmbeddings = new List<float[]>();
-                // List<string> validImagePathsForAnalysis = new List<string>(); // Może być potrzebne dla bardziej zaawansowanej klasteryzacji
 
                 SimpleFileLogger.Log($"ExecuteAnalyzeModelForSplittingAsync: Analizowanie profilu '{characterProfile.CategoryName}', liczba obrazów źródłowych: {characterProfile.SourceImagePaths.Count}.");
 
@@ -1590,7 +1588,6 @@ namespace CosplayManager.ViewModels
                         if (embedding != null)
                         {
                             allEmbeddings.Add(embedding);
-                            // validImagePathsForAnalysis.Add(imagePath);
                         }
                         else
                         {
@@ -1610,23 +1607,9 @@ namespace CosplayManager.ViewModels
                     continue;
                 }
 
-                // --- MIEJSCE NA RZECZYWISTY ALGORYTM KLASTERYZACJI ---
-                // Obecnie placeholder: oznacz jako "do podziału", jeśli ma > minImagesForSignificantSplit obrazów.
-                // W przyszłości:
-                // 1. Wykonaj klasteryzację na `allEmbeddings` (np. K-Means dla K=2, K=3; lub DBSCAN).
-                // 2. Oceń jakość klastrów:
-                //    - Czy klastry są wystarczająco liczne?
-                //    - Czy klastry są wewnętrznie spójne (wysokie podobieństwo wewnątrzklastrowe)?
-                //    - Czy klastry są od siebie różne (niskie podobieństwo międzyklastrowe)?
-                // 3. Jeśli znaleziono sensowny podział na >= 2 grupy, ustaw `foundSignificantSplit = true`.
-
                 bool foundSignificantSplit = false;
                 if (allEmbeddings.Count >= minImagesForSignificantSplit)
                 {
-                    // Tutaj powinna być bardziej zaawansowana logika.
-                    // Na przykład, można by obliczyć macierz podobieństw między wszystkimi obrazami w profilu,
-                    // a następnie użyć algorytmu grupowania (np. spectral clustering, affinity propagation, lub prostsze heurystyki).
-                    // Dla celów demonstracyjnych, zakładamy, że duża liczba obrazów implikuje możliwość podziału.
                     foundSignificantSplit = true;
                     SimpleFileLogger.Log($"ExecuteAnalyzeModelForSplittingAsync: Profil '{characterProfile.CategoryName}' (liczba przetworzonych obrazów: {allEmbeddings.Count}) oznaczony do podziału (LOGIKA PLACEHOLDERA).");
                 }
@@ -1634,14 +1617,13 @@ namespace CosplayManager.ViewModels
                 {
                     SimpleFileLogger.Log($"ExecuteAnalyzeModelForSplittingAsync: Profil '{characterProfile.CategoryName}' (liczba przetworzonych obrazów: {allEmbeddings.Count}) nie spełnia kryterium placeholderu ({minImagesForSignificantSplit}) do podziału.");
                 }
-                // --- KONIEC MIEJSCA NA ALGORYTM KLASTERYZACJI ---
 
                 characterProfile.HasSplitSuggestion = foundSignificantSplit;
                 if (foundSignificantSplit)
                 {
                     profilesMarkedForSplit++;
                 }
-            } // Koniec pętli po characterProfile
+            }
 
             StatusMessage = $"Analiza możliwości podziału dla '{modelVM.ModelName}' zakończona. Oznaczono {profilesMarkedForSplit} profili postaci.";
             SimpleFileLogger.Log(StatusMessage);
@@ -1655,5 +1637,85 @@ namespace CosplayManager.ViewModels
             }
         }
 
-    } // Koniec klasy MainWindowViewModel
-} // Koniec namespace
+        private bool CanExecuteOpenSplitProfileDialog(object? parameter)
+        {
+            return parameter is CategoryProfile characterProfile && characterProfile.HasSplitSuggestion;
+        }
+
+        private async Task ExecuteOpenSplitProfileDialogAsync(object? parameter)
+        {
+            if (!(parameter is CategoryProfile characterProfile))
+            {
+                SimpleFileLogger.LogWarning("ExecuteOpenSplitProfileDialogAsync: Parametr nie jest CategoryProfile.");
+                return;
+            }
+
+            StatusMessage = $"Przygotowywanie interfejsu podziału dla profilu '{characterProfile.CategoryName}'...";
+            SimpleFileLogger.Log($"ExecuteOpenSplitProfileDialogAsync: Otwieranie okna podziału dla '{characterProfile.CategoryName}'.");
+
+            List<ImageFileEntry> imagesInProfile = new List<ImageFileEntry>();
+            if (characterProfile.SourceImagePaths != null)
+            {
+                foreach (var path in characterProfile.SourceImagePaths)
+                {
+                    if (File.Exists(path))
+                    {
+                        var entry = await _imageMetadataService.ExtractMetadataAsync(path);
+                        if (entry != null)
+                        {
+                            imagesInProfile.Add(entry);
+                        }
+                    }
+                }
+            }
+
+            if (!imagesInProfile.Any())
+            {
+                MessageBox.Show("Wybrany profil nie zawiera obrazów do podziału.", "Brak obrazów", MessageBoxButton.OK, MessageBoxImage.Warning);
+                StatusMessage = "Gotowy.";
+                return;
+            }
+
+            // Placeholder: podział na pół
+            List<ImageFileEntry> group1 = imagesInProfile.Take(imagesInProfile.Count / 2).ToList();
+            List<ImageFileEntry> group2 = imagesInProfile.Skip(imagesInProfile.Count / 2).ToList();
+
+            string baseName = _profileService.GetCharacterNameFromCategory(characterProfile.CategoryName);
+            if (baseName == "General") baseName = _profileService.GetModelNameFromCategory(characterProfile.CategoryName);
+
+            string suggestedName1 = $"{baseName} - Grupa 1";
+            string suggestedName2 = $"{baseName} - Grupa 2";
+
+            var splitVM = new SplitProfileViewModel(characterProfile, group1, group2, suggestedName1, suggestedName2);
+            var splitWindow = new SplitProfileWindow
+            {
+                DataContext = splitVM,
+                Owner = Application.Current.Windows.OfType<Window>().SingleOrDefault(x => x.IsActive) ?? Application.Current.MainWindow
+            };
+            splitWindow.SetCloseAction(splitVM);
+
+            bool? dialogResult = splitWindow.ShowDialog();
+
+            if (dialogResult == true)
+            {
+                StatusMessage = $"Użytkownik zatwierdził podział dla '{characterProfile.CategoryName}'. (Logika finalizacji do implementacji)";
+                SimpleFileLogger.Log(StatusMessage);
+                // TODO: Logika finalizacji podziału
+                MessageBox.Show("Funkcjonalność finalizacji podziału (przenoszenie plików, tworzenie nowych profili) nie jest jeszcze zaimplementowana.", "Do zrobienia", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                // Po udanym podziale, warto by było wyczyścić flagę HasSplitSuggestion
+                characterProfile.HasSplitSuggestion = false;
+                // I potencjalnie odświeżyć całą analizę dla modelki lub przynajmniej dla tego profilu (który już nie istnieje w tej formie)
+                // Najprościej będzie odświeżyć widok profili
+                await ExecuteLoadProfilesAsync();
+            }
+            else
+            {
+                StatusMessage = $"Podział profilu '{characterProfile.CategoryName}' anulowany przez użytkownika.";
+                SimpleFileLogger.Log(StatusMessage);
+            }
+        }
+
+
+    }
+}
