@@ -991,41 +991,84 @@ namespace CosplayManager.ViewModels
 
         private void RefreshPendingSuggestionCountsFromCache()
         {
-            SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Próba odświeżenia liczników z nowym progiem: {SuggestionSimilarityThreshold}");
+            SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Próba odświeżenia liczników. Obecny próg: {SuggestionSimilarityThreshold:F4}. Nazwa cachowanej modelki: '{_lastScannedModelNameForSuggestions ?? "BRAK"}'. Liczba sugestii w _lastModelSpecificSuggestions: {_lastModelSpecificSuggestions?.Count ?? -1}");
 
-            if (string.IsNullOrEmpty(_lastScannedModelNameForSuggestions)) // Zmieniono warunek na sprawdzanie tylko nazwy modelu
+            // Jeśli _lastScannedModelNameForSuggestions jest null lub pusty, oznacza to, że
+            // żadne sugestie specyficzne dla modelu nie są buforowane lub pamięć podręczna została jawnie wyczyszczona.
+            // W takim przypadku wszystkie oczekujące liczniki powinny zostać wyzerowane.
+            if (string.IsNullOrEmpty(_lastScannedModelNameForSuggestions))
             {
-                SimpleFileLogger.Log("RefreshPendingSuggestionCountsFromCache: Brak nazwy cachowanej modelki. Zerowanie liczników dla wszystkich.");
+                SimpleFileLogger.Log("RefreshPendingSuggestionCountsFromCache: Brak nazwy cachowanej modelki lub cache wyczyszczony. Zerowanie liczników dla wszystkich modelek.");
                 foreach (var modelVM_iterator in HierarchicalProfilesList)
                 {
+                    if (modelVM_iterator.PendingSuggestionsCount != 0) // Loguj tylko jeśli faktycznie coś zmieniasz
+                    {
+                        SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Zerowanie licznika dla modelki '{modelVM_iterator.ModelName}' (miała {modelVM_iterator.PendingSuggestionsCount}).");
+                    }
                     modelVM_iterator.PendingSuggestionsCount = 0;
                     foreach (var charProfile_iterator in modelVM_iterator.CharacterProfiles)
                     {
                         charProfile_iterator.PendingSuggestionsCount = 0;
                     }
                 }
-                return;
+                // StatusMessage = "Gotowy. Cache sugestii modelu jest pusty."; // Można dodać, jeśli potrzebne
+                return; // Zakończ po wyczyszczeniu
             }
 
+            // Znajdź ModelDisplayViewModel dla nazwy modelki z pamięci podręcznej
             var modelVMToUpdate = HierarchicalProfilesList.FirstOrDefault(m => m.ModelName.Equals(_lastScannedModelNameForSuggestions, StringComparison.OrdinalIgnoreCase));
+
+            // Jeśli modelka nie jest już na liście hierarchicznej (np. została usunięta), nie możemy zaktualizować jej liczników.
+            // Pamięć podręczna _lastModelSpecificSuggestions i _lastScannedModelNameForSuggestions może być w tym przypadku nieaktualna.
             if (modelVMToUpdate == null)
             {
-                SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Cachowana modelka '{_lastScannedModelNameForSuggestions}' nie znaleziona na liście hierarchicznej.");
+                SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Cachowana modelka '{_lastScannedModelNameForSuggestions}' nie została znaleziona na liście hierarchicznej. Liczniki nie zostaną odświeżone. Możliwe, że modelka została usunięta lub jej nazwa zmieniona.");
+                // Można rozważyć wyczyszczenie pamięci podręcznej, jeśli modelki nie znaleziono, aby uniknąć niespójności.
+                // ClearModelSpecificSuggestionsCache(); // To mogłoby być zbyt agresywne, jeśli to tymczasowy stan UI.
                 return;
             }
 
-            SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Odświeżanie dla modelki '{modelVMToUpdate.ModelName}'.");
+            SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Rozpoczynam odświeżanie dla modelki '{modelVMToUpdate.ModelName}'.");
 
+            // Wyzeruj liczniki dla INNYCH modelek, aby upewnić się, że tylko _lastScannedModelNameForSuggestions
+            // wyświetla liczniki z tej konkretnej pamięci podręcznej.
+            foreach (var otherModelVM in HierarchicalProfilesList.Where(m => m.ModelName != modelVMToUpdate.ModelName))
+            {
+                if (otherModelVM.PendingSuggestionsCount > 0)
+                {
+                    SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Zerowanie licznika dla modelki spoza cache '{otherModelVM.ModelName}' (miała {otherModelVM.PendingSuggestionsCount}).");
+                    otherModelVM.PendingSuggestionsCount = 0;
+                    foreach (var charProfileOther in otherModelVM.CharacterProfiles)
+                    {
+                        charProfileOther.PendingSuggestionsCount = 0;
+                    }
+                }
+            }
+
+            // Zaktualizuj liczniki dla konkretnej modelki na podstawie pamięci podręcznej
+            int totalSuggestionsForThisModelAfterFilteringByThreshold = 0;
             foreach (var charProfile in modelVMToUpdate.CharacterProfiles)
             {
+                int oldCount = charProfile.PendingSuggestionsCount;
+                // Policz sugestie z pamięci podręcznej pasujące do tego profilu postaci i przekraczające obecny próg podobieństwa
                 charProfile.PendingSuggestionsCount = _lastModelSpecificSuggestions
                     .Count(move => move.TargetCategoryProfileName.Equals(charProfile.CategoryName, StringComparison.OrdinalIgnoreCase) &&
                                    move.Similarity >= SuggestionSimilarityThreshold);
-            }
-            modelVMToUpdate.PendingSuggestionsCount = modelVMToUpdate.CharacterProfiles.Sum(cp => cp.PendingSuggestionsCount);
 
-            SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Modelka '{modelVMToUpdate.ModelName}' - Nowy PendingSuggestionsCount (suma postaci): {modelVMToUpdate.PendingSuggestionsCount}");
-            StatusMessage = $"Odświeżono liczniki sugestii dla '{modelVMToUpdate.ModelName}' z progiem {SuggestionSimilarityThreshold:F2}.";
+                if (oldCount != charProfile.PendingSuggestionsCount)
+                {
+                    SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Postać '{charProfile.CategoryName}', licznik zmieniony z {oldCount} na {charProfile.PendingSuggestionsCount}.");
+                }
+                totalSuggestionsForThisModelAfterFilteringByThreshold += charProfile.PendingSuggestionsCount;
+            }
+
+            if (modelVMToUpdate.PendingSuggestionsCount != totalSuggestionsForThisModelAfterFilteringByThreshold)
+            {
+                SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Modelka '{modelVMToUpdate.ModelName}', suma dla modelu zmieniona z {modelVMToUpdate.PendingSuggestionsCount} na {totalSuggestionsForThisModelAfterFilteringByThreshold}.");
+            }
+            modelVMToUpdate.PendingSuggestionsCount = totalSuggestionsForThisModelAfterFilteringByThreshold;
+
+            SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache: Zakończono odświeżanie dla modelki '{modelVMToUpdate.ModelName}'. Nowy PendingSuggestionsCount (suma postaci): {modelVMToUpdate.PendingSuggestionsCount}.");
         }
 
         private async void HandleApprovedMoves(List<Models.ProposedMove> approvedMoves, ModelDisplayViewModel? specificModelVM, CategoryProfile? specificCharacterProfile)
