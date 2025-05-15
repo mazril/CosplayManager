@@ -175,6 +175,7 @@ namespace CosplayManager.ViewModels
         public ICommand MatchModelSpecificCommand { get; }
         public ICommand CheckCharacterSuggestionsCommand { get; }
         public ICommand RemoveModelTreeCommand { get; }
+        public ICommand AnalyzeModelForSplittingCommand { get; } // NOWA KOMENDA
 
 
         public MainWindowViewModel(
@@ -205,6 +206,7 @@ namespace CosplayManager.ViewModels
             MatchModelSpecificCommand = new AsyncRelayCommand(ExecuteMatchModelSpecificAsync, CanExecuteMatchModelSpecific);
             CheckCharacterSuggestionsCommand = new AsyncRelayCommand(ExecuteCheckCharacterSuggestionsAsync, CanExecuteCheckCharacterSuggestions);
             RemoveModelTreeCommand = new AsyncRelayCommand(ExecuteRemoveModelTreeAsync, CanExecuteRemoveModelTree);
+            AnalyzeModelForSplittingCommand = new AsyncRelayCommand(ExecuteAnalyzeModelForSplittingAsync, CanExecuteAnalyzeModelForSplitting); // NOWA KOMENDA
         }
 
         private void UpdateCurrentProfileNameForEdit()
@@ -232,21 +234,15 @@ namespace CosplayManager.ViewModels
             if (string.IsNullOrWhiteSpace(categoryName)) return ("UnknownModel", "UnknownCharacter");
             var parts = categoryName.Split(new[] { " - " }, StringSplitOptions.None);
             string model = parts.Length > 0 ? parts[0].Trim() : categoryName.Trim();
-            // Jeśli jest "Model - Char - SubChar", character będzie "Char - SubChar"
             string character = parts.Length > 1 ? string.Join(" - ", parts.Skip(1)).Trim() : "General";
 
-            if (string.IsNullOrWhiteSpace(character) && parts.Length > 1) // np. "Model - "
+            if (string.IsNullOrWhiteSpace(character) && parts.Length > 1)
             {
                 character = "General";
             }
             if (string.IsNullOrWhiteSpace(model)) model = "UnknownModel";
             if (string.IsNullOrWhiteSpace(character)) character = "General";
 
-            // Sanityzacja jest ważna dla nazw folderów, ale ParseCategoryName służy do analizy nazwy,
-            // więc sanityzację lepiej stosować tam, gdzie tworzone są nazwy folderów.
-            // Jednak dla spójności można ją tu zostawić, jeśli ParseCategoryName jest używane do rekonstrukcji ścieżek.
-            // model = SanitizeFolderName(model); 
-            // character = SanitizeFolderName(character);
             return (model, character);
         }
 
@@ -276,9 +272,6 @@ namespace CosplayManager.ViewModels
                 var (model, characterFullName) = ParseCategoryName(_selectedProfile.CategoryName);
                 ModelNameInput = model;
 
-                // Jeśli nazwa profilu to "Modelka" (czyli characterFullName to "General" a nazwa kategorii to tylko Modelka),
-                // to pole CharacterNameInput powinno być puste.
-                // Jeśli characterFullName to np. "Postac - Wariant", chcemy to tak zostawić.
                 if (characterFullName == "General" && _selectedProfile.CategoryName.Equals(model, StringComparison.OrdinalIgnoreCase))
                 {
                     CharacterNameInput = string.Empty;
@@ -287,7 +280,6 @@ namespace CosplayManager.ViewModels
                 {
                     CharacterNameInput = characterFullName;
                 }
-
 
                 var newImageFiles = new ObservableCollection<ImageFileEntry>();
                 if (_selectedProfile.SourceImagePaths != null)
@@ -475,6 +467,7 @@ namespace CosplayManager.ViewModels
                 (MatchModelSpecificCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 (CheckCharacterSuggestionsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 (RemoveModelTreeCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+                (AnalyzeModelForSplittingCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged(); // Odśwież CanExecute dla nowej komendy
 
                 if (_isRefreshingProfilesPostMove)
                 {
@@ -632,7 +625,6 @@ namespace CosplayManager.ViewModels
             }
         }
 
-        // ZMODYFIKOWANA METODA ExecuteAutoCreateProfilesAsync
         private async Task ExecuteAutoCreateProfilesAsync(object? parameter)
         {
             if (!CanExecuteAutoCreateProfiles(null))
@@ -668,7 +660,6 @@ namespace CosplayManager.ViewModels
                 string modelName = Path.GetFileName(modelDir);
                 SimpleFileLogger.Log($"ExecuteAutoCreateProfilesAsync: Przetwarzanie modelki '{modelName}' w folderze '{modelDir}'.");
 
-                // Rozpocznij rekurencyjne przetwarzanie od bezpośrednich podfolderów modelki
                 try
                 {
                     foreach (var directSubDirOfModel in Directory.GetDirectories(modelDir))
@@ -679,7 +670,6 @@ namespace CosplayManager.ViewModels
                             SimpleFileLogger.Log($"ExecuteAutoCreateProfilesAsync: Pomijanie folderu '{directSubDirName}' wewnątrz '{modelName}' (jest na liście folderów Mix).");
                             continue;
                         }
-                        // Pierwsze wywołanie rekurencyjnego pomocnika dla każdego "głównego folderu postaci"
                         profilesCreatedOrUpdatedTotal += await ProcessDirectoryForProfileCreationAsync(directSubDirOfModel, modelName, new List<string>(), configuredMixedFolderNames);
                     }
                 }
@@ -691,11 +681,10 @@ namespace CosplayManager.ViewModels
 
             StatusMessage = $"Zakończono. Utworzono/zaktualizowano: {profilesCreatedOrUpdatedTotal} profili.";
             SimpleFileLogger.Log(StatusMessage);
-            await ExecuteLoadProfilesAsync(); // Przeładuj wszystkie profile do UI
+            await ExecuteLoadProfilesAsync();
             MessageBox.Show(StatusMessage, "Skanowanie Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
-        // NOWA METODA POMOCNICZA DLA REKURENCYJNEGO TWORZENIA PROFILI
         private async Task<int> ProcessDirectoryForProfileCreationAsync(
             string currentDirPath,
             string modelName,
@@ -748,7 +737,6 @@ namespace CosplayManager.ViewModels
                 {
                     await _profileService.GenerateProfileAsync(categoryName, new List<ImageFileEntry>());
                     SimpleFileLogger.Log($"ProcessDirectoryForProfileCreationAsync: Folder '{currentDirPath}' dla profilu '{categoryName}' jest pusty. Profil (jeśli istniał) został wyczyszczony.");
-                    // profilesProcessedInThisBranch++; // Można zliczać, jeśli czyszczenie to też "przetworzenie"
                 }
                 else
                 {
@@ -777,19 +765,13 @@ namespace CosplayManager.ViewModels
             return profilesProcessedInThisBranch;
         }
 
-
         private async Task<Models.ProposedMove?> CreateProposedMoveAsync(ImageFileEntry sourceImageEntry, CategoryProfile suggestedProfileData, double similarityToCentroid, string modelDirectoryPath, float[] sourceEmbedding)
         {
             var (modelNameFromProfile, characterFullNameFromProfile) = ParseCategoryName(suggestedProfileData.CategoryName);
-
-            // Nazwa folderu docelowego dla postaci powinna być zrekonstruowana z pełnej nazwy postaci (która może zawierać " - ")
-            // np. jeśli characterFullNameFromProfile to "Fairy - Fairy 1", to chcemy folder "Fairy - Fairy 1"
-            // Sanityzacja jest ważna dla nazw folderów.
             string targetCharacterFolderName = SanitizeFolderName(characterFullNameFromProfile);
             string targetCharacterFolder = Path.Combine(modelDirectoryPath, targetCharacterFolderName);
 
             Directory.CreateDirectory(targetCharacterFolder);
-
             string proposedPathIfCopiedWithSourceName = Path.Combine(targetCharacterFolder, sourceImageEntry.FileName);
 
             ImageFileEntry? bestMatchingTargetInFolder = null;
@@ -898,7 +880,6 @@ namespace CosplayManager.ViewModels
                     if (Directory.Exists(mixFolderPath))
                     {
                         SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Skanowanie folderu Mix: {mixFolderPath}");
-                        // FileScannerService.ScanDirectoryAsync już działa rekurencyjnie (SearchOption.AllDirectories)
                         foreach (var imagePath in await _fileScannerService.ScanDirectoryAsync(mixFolderPath))
                         {
                             ImageFileEntry? sourceImageEntry = await _imageMetadataService.ExtractMetadataAsync(imagePath);
@@ -993,7 +974,6 @@ namespace CosplayManager.ViewModels
                         if (Directory.Exists(mixFolderPath))
                         {
                             SimpleFileLogger.Log($"ExecuteSuggestImagesAsync (Global): Skanowanie folderu Mix: {mixFolderPath}");
-                            // FileScannerService.ScanDirectoryAsync już działa rekurencyjnie
                             foreach (var imagePath in await _fileScannerService.ScanDirectoryAsync(mixFolderPath))
                             {
                                 ImageFileEntry? sourceImageEntry = await _imageMetadataService.ExtractMetadataAsync(imagePath);
@@ -1097,13 +1077,11 @@ namespace CosplayManager.ViewModels
 
                 if (Directory.Exists(modelDirectoryPath) && configuredMixedFolderNames.Any())
                 {
-                    // Skanowanie folderów Mix dla tej modelki
                     foreach (var mixFolderNamePattern in configuredMixedFolderNames)
                     {
                         string mixFolderPath = Path.Combine(modelDirectoryPath, mixFolderNamePattern);
                         if (Directory.Exists(mixFolderPath))
                         {
-                            // FileScannerService.ScanDirectoryAsync już działa rekurencyjnie
                             foreach (var imagePath in await _fileScannerService.ScanDirectoryAsync(mixFolderPath))
                             {
                                 ImageFileEntry? sourceImageEntry = await _imageMetadataService.ExtractMetadataAsync(imagePath);
@@ -1128,8 +1106,6 @@ namespace CosplayManager.ViewModels
                 StatusMessage = $"Zakończono dedykowane skanowanie dla '{characterProfile.CategoryName}'. Znaleziono: {suggestionsForThisCharacter.Count}.";
                 SimpleFileLogger.Log(StatusMessage);
 
-                // Aktualizacja cache'u - jeśli model się zmienił, czyścimy stary.
-                // Potem usuwamy stare sugestie dla tej postaci i dodajemy nowe.
                 if (_lastScannedModelNameForSuggestions != modelName && _lastScannedModelNameForSuggestions != null)
                 {
                     SimpleFileLogger.Log($"ExecuteCheckCharacterSuggestionsAsync (Fallback): Zmiana modelu z '{_lastScannedModelNameForSuggestions}' na '{modelName}'. Czyszczenie _lastModelSpecificSuggestions.");
@@ -1152,7 +1128,7 @@ namespace CosplayManager.ViewModels
                 bool? dialogOutcome = previewWindow.ShowDialog();
                 if (dialogOutcome == true)
                 {
-                    ModelDisplayViewModel? parentModelVM = HierarchicalProfilesList.FirstOrDefault(m => m.ModelName == modelName); // Znajdź nadrzędny ModelVM
+                    ModelDisplayViewModel? parentModelVM = HierarchicalProfilesList.FirstOrDefault(m => m.ModelName == modelName);
                     HandleApprovedMoves(previewVM.GetApprovedMoves(), parentModelVM, characterProfile);
                 }
                 else
@@ -1165,7 +1141,6 @@ namespace CosplayManager.ViewModels
             {
                 MessageBox.Show($"Nie znaleziono sugestii (powyżej progu {SuggestionSimilarityThreshold:F2}) dla '{characterProfile.CategoryName}'.", "Brak Sugestii", MessageBoxButton.OK, MessageBoxImage.Information);
             }
-            // Odśwież liczniki po całej operacji na postaci (pokazanie dialogu, przetworzenie lub anulowanie)
             RefreshPendingSuggestionCountsFromCache();
         }
 
@@ -1468,9 +1443,6 @@ namespace CosplayManager.ViewModels
             foreach (var profileName in profileNamesToRefresh)
             {
                 var (model, characterFullName) = ParseCategoryName(profileName);
-                // Aby uzyskać poprawną ścieżkę do folderu, musimy złożyć ją z części.
-                // Jeśli characterFullName to "Char - SubChar", chcemy ścieżkę Model\Char - SubChar
-                // SanitizeFolderName jest kluczowe dla części ścieżki.
                 string targetCharacterPathSegment = SanitizeFolderName(characterFullName);
                 string charPath = Path.Combine(LibraryRootPath, SanitizeFolderName(model), targetCharacterPathSegment);
 
@@ -1565,5 +1537,123 @@ namespace CosplayManager.ViewModels
                 }
             }
         }
-    }
-}
+
+        // NOWE METODY DLA FUNKCJI "PODZIEL PROFIL MODELKI"
+        private bool CanExecuteAnalyzeModelForSplitting(object? parameter)
+        {
+            // Można uruchomić, jeśli wybrano modelkę i ma ona jakiekolwiek profile postaci
+            return parameter is ModelDisplayViewModel modelVM && modelVM.HasCharacterProfiles;
+        }
+
+        private async Task ExecuteAnalyzeModelForSplittingAsync(object? parameter)
+        {
+            if (!(parameter is ModelDisplayViewModel modelVM))
+            {
+                SimpleFileLogger.LogWarning("ExecuteAnalyzeModelForSplittingAsync: Parametr nie jest ModelDisplayViewModel.");
+                return;
+            }
+
+            StatusMessage = $"Analizowanie profili postaci dla modelki '{modelVM.ModelName}' pod kątem możliwości podziału...";
+            SimpleFileLogger.Log($"ExecuteAnalyzeModelForSplittingAsync: Rozpoczęto dla modelki '{modelVM.ModelName}'.");
+            int profilesMarkedForSplit = 0;
+
+            // Najpierw wyczyść poprzednie oznaczenia 'HasSplitSuggestion' dla tej modelki
+            foreach (var existingCharProfile in modelVM.CharacterProfiles)
+            {
+                existingCharProfile.HasSplitSuggestion = false;
+            }
+
+            foreach (var characterProfile in modelVM.CharacterProfiles.ToList())
+            {
+                // Podstawowe warunki, aby w ogóle rozważać podział
+                // Np. profil musi mieć wystarczająco dużo obrazów
+                const int minImagesForSplitConsideration = 10; // Przykładowy próg minimalnej liczby obrazów
+                const int minImagesForSignificantSplit = 20; // Przykładowy próg dla placeholderu, że "coś znaleziono"
+
+                if (characterProfile.SourceImagePaths == null || characterProfile.SourceImagePaths.Count < minImagesForSplitConsideration)
+                {
+                    characterProfile.HasSplitSuggestion = false;
+                    SimpleFileLogger.Log($"ExecuteAnalyzeModelForSplittingAsync: Profil '{characterProfile.CategoryName}' ma za mało obrazów ({characterProfile.SourceImagePaths?.Count ?? 0} < {minImagesForSplitConsideration}), pomijanie analizy podziału.");
+                    continue;
+                }
+
+                List<float[]> allEmbeddings = new List<float[]>();
+                // List<string> validImagePathsForAnalysis = new List<string>(); // Może być potrzebne dla bardziej zaawansowanej klasteryzacji
+
+                SimpleFileLogger.Log($"ExecuteAnalyzeModelForSplittingAsync: Analizowanie profilu '{characterProfile.CategoryName}', liczba obrazów źródłowych: {characterProfile.SourceImagePaths.Count}.");
+
+                foreach (string imagePath in characterProfile.SourceImagePaths)
+                {
+                    if (File.Exists(imagePath))
+                    {
+                        float[]? embedding = await _profileService.GetImageEmbeddingAsync(imagePath);
+                        if (embedding != null)
+                        {
+                            allEmbeddings.Add(embedding);
+                            // validImagePathsForAnalysis.Add(imagePath);
+                        }
+                        else
+                        {
+                            SimpleFileLogger.LogWarning($"ExecuteAnalyzeModelForSplittingAsync: Nie udało się uzyskać embeddingu dla obrazu '{imagePath}' z profilu '{characterProfile.CategoryName}'.");
+                        }
+                    }
+                    else
+                    {
+                        SimpleFileLogger.LogWarning($"ExecuteAnalyzeModelForSplittingAsync: Obraz '{imagePath}' z profilu '{characterProfile.CategoryName}' nie istnieje.");
+                    }
+                }
+
+                if (allEmbeddings.Count < minImagesForSplitConsideration)
+                {
+                    characterProfile.HasSplitSuggestion = false;
+                    SimpleFileLogger.Log($"ExecuteAnalyzeModelForSplittingAsync: Profil '{characterProfile.CategoryName}' ma za mało poprawnych embeddingów ({allEmbeddings.Count} < {minImagesForSplitConsideration}), pomijanie analizy podziału.");
+                    continue;
+                }
+
+                // --- MIEJSCE NA RZECZYWISTY ALGORYTM KLASTERYZACJI ---
+                // Obecnie placeholder: oznacz jako "do podziału", jeśli ma > minImagesForSignificantSplit obrazów.
+                // W przyszłości:
+                // 1. Wykonaj klasteryzację na `allEmbeddings` (np. K-Means dla K=2, K=3; lub DBSCAN).
+                // 2. Oceń jakość klastrów:
+                //    - Czy klastry są wystarczająco liczne?
+                //    - Czy klastry są wewnętrznie spójne (wysokie podobieństwo wewnątrzklastrowe)?
+                //    - Czy klastry są od siebie różne (niskie podobieństwo międzyklastrowe)?
+                // 3. Jeśli znaleziono sensowny podział na >= 2 grupy, ustaw `foundSignificantSplit = true`.
+
+                bool foundSignificantSplit = false;
+                if (allEmbeddings.Count >= minImagesForSignificantSplit)
+                {
+                    // Tutaj powinna być bardziej zaawansowana logika.
+                    // Na przykład, można by obliczyć macierz podobieństw między wszystkimi obrazami w profilu,
+                    // a następnie użyć algorytmu grupowania (np. spectral clustering, affinity propagation, lub prostsze heurystyki).
+                    // Dla celów demonstracyjnych, zakładamy, że duża liczba obrazów implikuje możliwość podziału.
+                    foundSignificantSplit = true;
+                    SimpleFileLogger.Log($"ExecuteAnalyzeModelForSplittingAsync: Profil '{characterProfile.CategoryName}' (liczba przetworzonych obrazów: {allEmbeddings.Count}) oznaczony do podziału (LOGIKA PLACEHOLDERA).");
+                }
+                else
+                {
+                    SimpleFileLogger.Log($"ExecuteAnalyzeModelForSplittingAsync: Profil '{characterProfile.CategoryName}' (liczba przetworzonych obrazów: {allEmbeddings.Count}) nie spełnia kryterium placeholderu ({minImagesForSignificantSplit}) do podziału.");
+                }
+                // --- KONIEC MIEJSCA NA ALGORYTM KLASTERYZACJI ---
+
+                characterProfile.HasSplitSuggestion = foundSignificantSplit;
+                if (foundSignificantSplit)
+                {
+                    profilesMarkedForSplit++;
+                }
+            } // Koniec pętli po characterProfile
+
+            StatusMessage = $"Analiza możliwości podziału dla '{modelVM.ModelName}' zakończona. Oznaczono {profilesMarkedForSplit} profili postaci.";
+            SimpleFileLogger.Log(StatusMessage);
+            if (profilesMarkedForSplit > 0)
+            {
+                MessageBox.Show($"Znaleziono {profilesMarkedForSplit} profili postaci dla modelki '{modelVM.ModelName}', które mogą kwalifikować się do podziału (oznaczone literą 'P' w drzewie).\nFunkcjonalność samego podziału (nowe okno, przenoszenie plików) wymaga dalszej implementacji.", "Analiza Zakończona", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                MessageBox.Show($"Nie znaleziono profili postaci dla modelki '{modelVM.ModelName}', które jednoznacznie kwalifikowałyby się do podziału na podstawie obecnych (placeholderowych) kryteriów.", "Analiza Zakończona", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+    } // Koniec klasy MainWindowViewModel
+} // Koniec namespace
