@@ -266,7 +266,7 @@ namespace CosplayManager.ViewModels
         }
 
 
-        private async void UpdateEditFieldsFromSelectedProfile() // Zmieniono na async void
+        private async void UpdateEditFieldsFromSelectedProfile()
         {
             if (_selectedProfile != null)
             {
@@ -286,26 +286,27 @@ namespace CosplayManager.ViewModels
                 var newImageFiles = new ObservableCollection<ImageFileEntry>();
                 if (_selectedProfile.SourceImagePaths != null)
                 {
-                    List<Task> thumbnailTasks = new List<Task>();
+                    //List<Task> thumbnailTasks = new List<Task>(); // Nie potrzebujemy już tej listy do await
                     foreach (var path in _selectedProfile.SourceImagePaths)
                     {
                         if (File.Exists(path))
                         {
                             var entry = new ImageFileEntry { FilePath = path, FileName = Path.GetFileName(path) };
                             newImageFiles.Add(entry);
-                            thumbnailTasks.Add(entry.LoadThumbnailAsync()); // Dodaj zadanie ładowania miniatury
+                            _ = entry.LoadThumbnailAsync(); // Uruchom ładowanie miniatury, nie czekaj (fire and forget)
+                            //thumbnailTasks.Add(entry.LoadThumbnailAsync());
                         }
                         else
                         {
                             SimpleFileLogger.LogWarning($"OSTRZEŻENIE (UpdateEditFields): Ścieżka obrazu '{path}' dla profilu '{_selectedProfile.CategoryName}' nie istnieje.");
                         }
                     }
-                    ImageFiles = newImageFiles; // Ustaw kolekcję
-                    await Task.WhenAll(thumbnailTasks); // Poczekaj na załadowanie wszystkich miniatur dla tego profilu
+                    ImageFiles = newImageFiles;
+                    // await Task.WhenAll(thumbnailTasks); // USUNIĘTO - pozwól ładować w tle
                 }
                 else
                 {
-                    ImageFiles = new ObservableCollection<ImageFileEntry>(); // Pusta kolekcja, jeśli brak ścieżek
+                    ImageFiles = new ObservableCollection<ImageFileEntry>();
                 }
             }
             else
@@ -313,9 +314,10 @@ namespace CosplayManager.ViewModels
                 CurrentProfileNameForEdit = string.Empty;
                 ModelNameInput = string.Empty;
                 CharacterNameInput = string.Empty;
-                ImageFiles = new ObservableCollection<ImageFileEntry>(); // Pusta kolekcja
+                ImageFiles = new ObservableCollection<ImageFileEntry>();
             }
         }
+
 
         private void ClearModelSpecificSuggestionsCache()
         {
@@ -585,7 +587,7 @@ namespace CosplayManager.ViewModels
             }
         }
 
-        private async void ExecuteAddFilesToProfile(object? parameter = null) // Zmieniono na async void
+        private async void ExecuteAddFilesToProfile(object? parameter = null)
         {
             OpenFileDialog openFileDialog = new OpenFileDialog
             {
@@ -597,25 +599,26 @@ namespace CosplayManager.ViewModels
             if (openFileDialog.ShowDialog() == true)
             {
                 bool filesAdded = false;
-                List<Task> thumbnailTasks = new List<Task>();
+                //List<Task> thumbnailTasks = new List<Task>(); // Nie potrzebujemy już tej listy do await
                 foreach (string fileName in openFileDialog.FileNames)
                 {
                     if (!ImageFiles.Any(f => f.FilePath.Equals(fileName, StringComparison.OrdinalIgnoreCase)))
                     {
                         var entry = new ImageFileEntry { FilePath = fileName, FileName = Path.GetFileName(fileName) };
-                        ImageFiles.Add(entry); // Dodaj do ObservableCollection (powiadomi UI)
-                        thumbnailTasks.Add(entry.LoadThumbnailAsync()); // Rozpocznij ładowanie miniatury
+                        ImageFiles.Add(entry);
+                        _ = entry.LoadThumbnailAsync(); // Uruchom ładowanie miniatury, nie czekaj (fire and forget)
+                        //thumbnailTasks.Add(entry.LoadThumbnailAsync());
                         filesAdded = true;
                     }
                 }
                 if (filesAdded)
                 {
                     (GenerateProfileCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
-                    await Task.WhenAll(thumbnailTasks); // Opcjonalnie poczekaj na wszystkie miniatury (może spowolnić UI jeśli dużo plików)
-                                                        // lub pozwól im ładować się w tle - UI zaktualizuje się samo dzięki INotifyPropertyChanged w ImageFileEntry.Thumbnail
+                    // await Task.WhenAll(thumbnailTasks); // USUNIĘTO - pozwól ładować w tle
                 }
             }
         }
+
 
         private void ExecuteClearFilesFromProfile(object? parameter = null)
         {
