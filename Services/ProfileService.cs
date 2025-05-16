@@ -1,4 +1,4 @@
-﻿// File: Services/ProfileService.cs
+﻿// Plik: Services/ProfileService.cs
 using CosplayManager.Models;
 using CosplayManager.Utils;
 using System;
@@ -14,7 +14,7 @@ namespace CosplayManager.Services
     {
         private List<CategoryProfile> _profiles;
         private readonly ClipServiceHttpClient _clipService;
-        private readonly EmbeddingCacheService _embeddingCacheService; // Added
+        private readonly EmbeddingCacheService _embeddingCacheService;
         private readonly string _profilesBaseFolderPath;
 
         private class ModelProfilesFileContent
@@ -23,11 +23,10 @@ namespace CosplayManager.Services
             public List<CategoryProfile> CharacterProfiles { get; set; } = new List<CategoryProfile>();
         }
 
-        // Modified constructor
         public ProfileService(ClipServiceHttpClient clipService, EmbeddingCacheService embeddingCacheService, string profilesFolderName = "CategoryProfiles")
         {
             _clipService = clipService ?? throw new ArgumentNullException(nameof(clipService));
-            _embeddingCacheService = embeddingCacheService ?? throw new ArgumentNullException(nameof(embeddingCacheService)); // Added
+            _embeddingCacheService = embeddingCacheService ?? throw new ArgumentNullException(nameof(embeddingCacheService));
             _profilesBaseFolderPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, profilesFolderName);
 
             if (!Directory.Exists(_profilesBaseFolderPath))
@@ -64,7 +63,7 @@ namespace CosplayManager.Services
         {
             if (string.IsNullOrWhiteSpace(categoryName)) return "UnknownCharacter";
             var parts = categoryName.Split(new[] { " - " }, StringSplitOptions.None);
-            return parts.Length > 1 ? parts[1].Trim() : (parts.Length == 1 ? "General" : "UnknownCharacter");
+            return parts.Length > 1 ? string.Join(" - ", parts.Skip(1)).Trim() : (parts.Length == 1 ? "General" : "UnknownCharacter");
         }
 
         private string SanitizeFileName(string name)
@@ -77,26 +76,32 @@ namespace CosplayManager.Services
             return name.Trim();
         }
 
-        // Modified to use EmbeddingCacheService
-        public async Task<float[]?> GetImageEmbeddingAsync(string imagePath)
+        // ZMODYFIKOWANA SYGNATURA I IMPLEMENTACJA
+        public async Task<float[]?> GetImageEmbeddingAsync(ImageFileEntry imageEntry)
         {
-            if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+            if (imageEntry == null || string.IsNullOrWhiteSpace(imageEntry.FilePath))
             {
-                SimpleFileLogger.Log($"ProfileService.GetImageEmbeddingAsync: Nieprawidłowa ścieżka lub plik nie istnieje: {imagePath}");
+                SimpleFileLogger.Log($"ProfileService.GetImageEmbeddingAsync: Nieprawidłowy ImageFileEntry lub ścieżka.");
                 return null;
             }
+            // Zakładamy, że File.Exists zostało sprawdzone wcześniej, np. podczas tworzenia ImageFileEntry
+            // lub jeśli nie, można dodać tu sprawdzenie `if (!File.Exists(imageEntry.FilePath)) return null;`
+
             try
             {
-                // Use the cache service here
-                return await _embeddingCacheService.GetOrUpdateEmbeddingAsync(imagePath, async (path) =>
-                {
-                    SimpleFileLogger.Log($"Embedding provider called for: {path}");
-                    return await _clipService.GetImageEmbeddingFromPathAsync(path);
-                });
+                return await _embeddingCacheService.GetOrUpdateEmbeddingAsync(
+                    imageEntry.FilePath,
+                    imageEntry.FileLastModifiedUtc,
+                    imageEntry.FileSize,
+                    async (path) => // Ten delegat jest wywoływany tylko jeśli cache miss lub invalid
+                    {
+                        SimpleFileLogger.Log($"Embedding provider (cache miss/invalid) called for: {path}");
+                        return await _clipService.GetImageEmbeddingFromPathAsync(path);
+                    });
             }
             catch (Exception ex)
             {
-                SimpleFileLogger.LogError($"ProfileService.GetImageEmbeddingAsync: Błąd dla obrazu {imagePath}", ex);
+                SimpleFileLogger.LogError($"ProfileService.GetImageEmbeddingAsync: Błąd dla obrazu {imageEntry.FilePath}", ex);
                 return null;
             }
         }
@@ -112,9 +117,15 @@ namespace CosplayManager.Services
 
             string modelName = GetModelNameFromCategory(categoryName);
 
-            if (imageFileEntries == null || !imageFileEntries.Any())
+            // Filtrujemy wpisy, które mają prawidłowe ścieżki i dla których pliki istnieją
+            // (ImageFileEntry powinien już mieć te dane, jeśli został poprawnie utworzony)
+            var validImageFileEntries = imageFileEntries?
+                                     .Where(entry => entry != null && !string.IsNullOrWhiteSpace(entry.FilePath) && File.Exists(entry.FilePath))
+                                     .ToList() ?? new List<ImageFileEntry>();
+
+            if (!validImageFileEntries.Any())
             {
-                SimpleFileLogger.Log($"GenerateProfileAsync: Brak obrazów dla '{categoryName}'. Próba usunięcia/wyczyszczenia profilu.");
+                SimpleFileLogger.Log($"GenerateProfileAsync: Brak prawidłowych obrazów dla '{categoryName}'. Próba usunięcia/wyczyszczenia profilu.");
                 CategoryProfile? existingProfile = GetProfile(categoryName);
                 if (existingProfile != null)
                 {
@@ -125,39 +136,21 @@ namespace CosplayManager.Services
                 return;
             }
 
-            List<string> imagePaths = imageFileEntries
-                                     .Where(entry => !string.IsNullOrWhiteSpace(entry.FilePath) && File.Exists(entry.FilePath))
-                                     .Select(entry => entry.FilePath)
-                                     .ToList();
-
-            if (!imagePaths.Any())
-            {
-                SimpleFileLogger.Log($"GenerateProfileAsync: Brak prawidłowych ścieżek obrazów dla '{categoryName}'.");
-                CategoryProfile? existingProfileToClear = GetProfile(categoryName);
-                if (existingProfileToClear != null)
-                {
-                    _profiles.Remove(existingProfileToClear);
-                    SimpleFileLogger.Log($"GenerateProfileAsync: Usunięto profil '{categoryName}' z pamięci z powodu braku prawidłowych obrazów.");
-                    await SaveProfilesForModelAsync(modelName);
-                }
-                return;
-            }
-
             List<float[]> embeddings = new List<float[]>();
-            List<string> validImagePathsForProfile = new List<string>();
+            List<string> validImagePathsForProfile = new List<string>(); // Nadal potrzebne dla CategoryProfile.UpdateCentroid
 
-            foreach (var imagePath in imagePaths)
+            foreach (var entry in validImageFileEntries) // Iterujemy po ImageFileEntry
             {
-                // This call will now use the cache
-                float[]? embedding = await GetImageEmbeddingAsync(imagePath);
+                // Wywołujemy zmodyfikowaną metodę
+                float[]? embedding = await GetImageEmbeddingAsync(entry);
                 if (embedding != null)
                 {
                     embeddings.Add(embedding);
-                    validImagePathsForProfile.Add(imagePath);
+                    validImagePathsForProfile.Add(entry.FilePath); // Dodajemy ścieżkę do listy dla UpdateCentroid
                 }
                 else
                 {
-                    SimpleFileLogger.Log($"GenerateProfileAsync: Nie udało się uzyskać wektora cech dla obrazu: {imagePath} w kategorii {categoryName}");
+                    SimpleFileLogger.Log($"GenerateProfileAsync: Nie udało się uzyskać wektora cech dla obrazu: {entry.FilePath} w kategorii {categoryName}");
                 }
             }
 
@@ -181,6 +174,7 @@ namespace CosplayManager.Services
                 _profiles.Add(profile);
                 SimpleFileLogger.Log($"GenerateProfileAsync: Utworzono nowy obiekt profilu '{categoryName}' w pamięci.");
             }
+            // UpdateCentroid nadal przyjmuje List<string> imagePaths
             profile.UpdateCentroid(embeddings, validImagePathsForProfile);
 
             await SaveProfilesForModelAsync(modelName);
@@ -244,6 +238,8 @@ namespace CosplayManager.Services
             if (!_profiles.Any())
             {
                 SimpleFileLogger.Log("SaveAllProfilesAsync: Brak profili w pamięci do zapisania.");
+                // Nawet jeśli nie ma profili, zapiszmy cache, bo mógł być użyty do odrzucenia plików
+                _embeddingCacheService.SaveCacheToFile();
                 return;
             }
 
@@ -256,7 +252,6 @@ namespace CosplayManager.Services
             }
             SimpleFileLogger.Log($"SaveAllProfilesAsync: Zakończono. Zapisano profile dla {modelsSavedCount} modelek.");
 
-            // Save the embedding cache when all profiles are saved
             _embeddingCacheService.SaveCacheToFile();
         }
 
@@ -285,33 +280,25 @@ namespace CosplayManager.Services
                     {
                         foreach (var profile in fileContent.CharacterProfiles)
                         {
-                            // Ensure CategoryName is fully qualified with ModelName
-                            // This logic ensures that if a profile was saved with a partial name, it gets corrected.
-                            // It's important especially if CategoryName was manually edited or came from an older format.
                             string expectedPrefix = $"{fileContent.ModelName} - ";
                             if (!profile.CategoryName.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase) &&
-                                !profile.CategoryName.Equals(fileContent.ModelName, StringComparison.OrdinalIgnoreCase)) // Handles cases where character name might be "General" or similar
+                                !profile.CategoryName.Equals(fileContent.ModelName, StringComparison.OrdinalIgnoreCase))
                             {
-                                // Check if the profile category name is just the character part
                                 string characterPart = GetCharacterNameFromCategory(profile.CategoryName);
-                                if (characterPart.Equals(profile.CategoryName, StringComparison.OrdinalIgnoreCase)) // It's only the character part
+                                if (characterPart.Equals(profile.CategoryName, StringComparison.OrdinalIgnoreCase))
                                 {
                                     profile.CategoryName = $"{fileContent.ModelName} - {profile.CategoryName}";
                                 }
-                                // else, the name might be complex or already correct but not matching model name, log it
                                 else if (!GetModelNameFromCategory(profile.CategoryName).Equals(fileContent.ModelName, StringComparison.OrdinalIgnoreCase))
                                 {
                                     SimpleFileLogger.LogWarning($"LoadProfilesAsync: Profile '{profile.CategoryName}' in file '{Path.GetFileName(filePath)}' for model '{fileContent.ModelName}' has a mismatched model prefix. Attempting to correct to '{fileContent.ModelName} - {characterPart}'.");
                                     profile.CategoryName = $"{fileContent.ModelName} - {characterPart}";
                                 }
-                                // If it already contains " - " but the model part is wrong, it's a more complex issue.
-                                // The above logic tries a simple correction.
                             }
-                            else if (profile.CategoryName.Equals(fileContent.ModelName, StringComparison.OrdinalIgnoreCase)) // if category is just model name, assume "General"
+                            else if (profile.CategoryName.Equals(fileContent.ModelName, StringComparison.OrdinalIgnoreCase))
                             {
                                 profile.CategoryName = $"{fileContent.ModelName} - General";
                             }
-
 
                             _profiles.Add(profile);
                             profilesLoadedTotal++;
@@ -385,7 +372,7 @@ namespace CosplayManager.Services
                 if (removedFromMemory)
                 {
                     SimpleFileLogger.Log($"RemoveProfileAsync: Usunięto profil '{categoryName}' z pamięci.");
-                    await SaveProfilesForModelAsync(modelName); // Zapisz zmiany dla tego modelu (lub usuń plik, jeśli to był ostatni profil)
+                    await SaveProfilesForModelAsync(modelName);
                     return true;
                 }
             }
