@@ -1,8 +1,13 @@
 // Plik: CosplayManager/Models/ImageFileEntry.cs
+using CosplayManager.Services; // Dla SimpleFileLogger
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization; // Potrzebne dla JsonIgnore
+using System.Threading.Tasks;
+using System.Windows.Media.Imaging; // Dla BitmapImage
+using System; // Dla Uri
 
 namespace CosplayManager.Models
 {
@@ -77,18 +82,83 @@ namespace CosplayManager.Models
             }
         }
 
-        // Właściwość tylko do odczytu dla długości wektora
         [JsonIgnore]
         public int FeatureVectorLength => _featureVector?.Length ?? 0;
 
-        // Właściwość pomocnicza dla XAML, wskazująca czy wektor istnieje
         [JsonIgnore]
         public bool HasFeatureVector => _featureVector != null;
 
-        // Właściwość pomocnicza dla XAML, wskazująca czy hash istnieje
         [JsonIgnore]
         public bool HasPerceptualHash => _perceptualHash != null;
 
+        // --- NOWE WŁAŚCIWOŚCI I METODY DLA MINIATUR ---
+        private BitmapImage? _thumbnail;
+        [JsonIgnore]
+        public BitmapImage? Thumbnail
+        {
+            get => _thumbnail;
+            private set => SetProperty(ref _thumbnail, value);
+        }
+
+        private bool _isLoadingThumbnail;
+        [JsonIgnore]
+        public bool IsLoadingThumbnail
+        {
+            get => _isLoadingThumbnail;
+            private set => SetProperty(ref _isLoadingThumbnail, value);
+        }
+
+        public async Task LoadThumbnailAsync(int decodePixelWidth = 150)
+        {
+            if (Thumbnail != null || string.IsNullOrWhiteSpace(FilePath) || !File.Exists(FilePath))
+            {
+                if (Thumbnail == null && (!string.IsNullOrWhiteSpace(FilePath) && !File.Exists(FilePath)))
+                {
+                    SimpleFileLogger.LogWarning($"LoadThumbnailAsync: Plik źródłowy nie istnieje dla '{FilePath}', miniatura nie zostanie załadowana.");
+                }
+                return;
+            }
+
+            IsLoadingThumbnail = true;
+            try
+            {
+                BitmapImage? tempThumbnail = await Task.Run(() =>
+                {
+                    try
+                    {
+                        if (!File.Exists(FilePath))
+                        {
+                            SimpleFileLogger.Log($"ImageFileEntry.LoadThumbnailAsync (Task.Run): Plik nie znaleziony '{FilePath}'");
+                            return null;
+                        }
+
+                        BitmapImage bmp = new BitmapImage();
+                        bmp.BeginInit();
+                        bmp.UriSource = new Uri(FilePath);
+                        bmp.CacheOption = BitmapCacheOption.OnLoad;
+                        bmp.DecodePixelWidth = decodePixelWidth;
+                        bmp.EndInit();
+                        bmp.Freeze();
+                        return bmp;
+                    }
+                    catch (Exception ex)
+                    {
+                        SimpleFileLogger.LogError($"Błąd tworzenia miniatury dla {FilePath} w Task.Run", ex);
+                        return null;
+                    }
+                });
+                Thumbnail = tempThumbnail;
+            }
+            catch (Exception ex)
+            {
+                SimpleFileLogger.LogError($"Zewnętrzny błąd ładowania miniatury dla {FilePath}", ex);
+            }
+            finally
+            {
+                IsLoadingThumbnail = false;
+            }
+        }
+        // --- KONIEC NOWYCH WŁAŚCIWOŚCI I METOD ---
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
