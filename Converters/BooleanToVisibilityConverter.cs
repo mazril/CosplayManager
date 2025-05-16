@@ -6,7 +6,7 @@ using System.Windows.Data;
 
 namespace CosplayManager.Converters
 {
-    public class BooleanToVisibilityConverter : IValueConverter
+    public class BooleanToVisibilityConverter : IValueConverter // Upewnij się, że jest public
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -16,7 +16,6 @@ namespace CosplayManager.Converters
                 boolValue = b;
             }
 
-            // Możliwość odwrócenia logiki przez parametr konwertera
             if (parameter != null && parameter.ToString().Equals("Inverse", StringComparison.OrdinalIgnoreCase))
             {
                 boolValue = !boolValue;
