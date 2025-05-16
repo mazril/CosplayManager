@@ -1,5 +1,5 @@
 // Plik: MainWindow.xaml.cs
-using CosplayManager.Models; // Potrzebne dla CategoryProfile
+using CosplayManager.Models;
 using CosplayManager.Services;
 using CosplayManager.ViewModels;
 using Microsoft.Win32;
@@ -18,16 +18,16 @@ namespace CosplayManager
         private ProfileService? _profileServiceInstance;
         private MainWindowViewModel? _viewModelInstance;
         private SettingsService? _settingsServiceInstance;
+        private EmbeddingCacheService? _embeddingCacheServiceInstance; // Added
 
-        private string PythonExecutablePath = @"C:\Users\GameStation\AppData\Local\Programs\Python\Python311\python.exe";
-        private string ClipServerScriptPath = @"C:\Projekt\CosplayManager\Python\clip_server.py";
+        private string PythonExecutablePath = @"C:\Users\GameStation\AppData\Local\Programs\Python\Python311\python.exe"; // Example
+        private string ClipServerScriptPath = @"C:\Projekt\CosplayManager\Python\clip_server.py"; // Example
 
         public MainWindow()
         {
             InitializeComponent();
-
             this.Loaded += MainWindow_Loaded;
-            this.Closing += MainWindow_Closing_SaveSettings;
+            this.Closing += MainWindow_Closing_SaveItems; // Modified
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -37,20 +37,23 @@ namespace CosplayManager
 
             _settingsServiceInstance = new SettingsService();
             UserSettings? loadedSettings = await _settingsServiceInstance.LoadSettingsAsync();
-            // Stosowanie ustawieñ Pythona, jeœli s¹ i jeœli chcesz je wczytywaæ st¹d
-            // PythonExecutablePath = ...
-            // ClipServerScriptPath = ...
+
+            // Apply Python paths from settings if they exist, or use defaults
+            // For example:
+            // if (!string.IsNullOrWhiteSpace(loadedSettings?.PythonExecutablePathConfig)) PythonExecutablePath = loadedSettings.PythonExecutablePathConfig;
+            // if (!string.IsNullOrWhiteSpace(loadedSettings?.ClipServerScriptPathConfig)) ClipServerScriptPath = loadedSettings.ClipServerScriptPathConfig;
+
 
             if (!File.Exists(PythonExecutablePath))
             {
-                MessageBox.Show($"Krytyczny b³¹d: Nie znaleziono interpretera Pythona w: \n{PythonExecutablePath}\n\nSprawdŸ konfiguracjê œcie¿ek.",
+                MessageBox.Show($"Krytyczny b³¹d: Nie znaleziono interpretera Pythona w: \n{PythonExecutablePath}\n\nSprawdŸ konfiguracjê œcie¿ek w ustawieniach lub bezpoœrednio w kodzie.",
                                 "B³¹d konfiguracji interpretera Python", MessageBoxButton.OK, MessageBoxImage.Error);
                 if (statusTextBlock != null) statusTextBlock.Text = "B³¹d konfiguracji Pythona.";
                 return;
             }
             if (!File.Exists(ClipServerScriptPath))
             {
-                MessageBox.Show($"Krytyczny b³¹d: Nie znaleziono skryptu serwera Pythona w: \n{ClipServerScriptPath}\n\nSprawdŸ konfiguracjê œcie¿ek.",
+                MessageBox.Show($"Krytyczny b³¹d: Nie znaleziono skryptu serwera Pythona w: \n{ClipServerScriptPath}\n\nSprawdŸ konfiguracjê œcie¿ek w ustawieniach lub bezpoœrednio w kodzie.",
                                 "B³¹d konfiguracji skryptu serwera", MessageBoxButton.OK, MessageBoxImage.Error);
                 if (statusTextBlock != null) statusTextBlock.Text = "B³¹d konfiguracji skryptu serwera.";
                 return;
@@ -83,7 +86,8 @@ namespace CosplayManager
                 SimpleFileLogger.Log("MainWindow: Serwer CLIP uruchomiony pomyœlnie.");
                 if (statusTextBlock != null) statusTextBlock.Text = "Serwer AI uruchomiony. Inicjalizacja ViewModel...";
 
-                _profileServiceInstance = new ProfileService(_clipService);
+                _embeddingCacheServiceInstance = new EmbeddingCacheService(); // Instantiated
+                _profileServiceInstance = new ProfileService(_clipService, _embeddingCacheServiceInstance); // Passed to ProfileService
                 var fileScanner = new FileScannerService();
                 var metadataService = new ImageMetadataService();
 
@@ -96,7 +100,7 @@ namespace CosplayManager
 
                 try
                 {
-                    await _viewModelInstance.InitializeAsync();
+                    await _viewModelInstance.InitializeAsync(); // This will load settings and profiles
                     if (statusTextBlock != null) statusTextBlock.Text = "Aplikacja gotowa.";
                 }
                 catch (Exception vmEx)
@@ -118,14 +122,35 @@ namespace CosplayManager
             if (testClipMenuItem != null) testClipMenuItem.IsEnabled = serverStarted;
         }
 
-        private async void MainWindow_Closing_SaveSettings(object sender, System.ComponentModel.CancelEventArgs e)
+        // Modified to also save embedding cache
+        private async void MainWindow_Closing_SaveItems(object sender, System.ComponentModel.CancelEventArgs e)
         {
             SimpleFileLogger.Log("MainWindow: Zamykanie aplikacji...");
 
             if (_viewModelInstance != null)
             {
-                await _viewModelInstance.OnAppClosingAsync();
+                // Save app settings via ViewModel or directly if settings service is accessible
+                await _viewModelInstance.OnAppClosingAsync(); // This should save settings
             }
+
+            // Save profiles (which now also saves embedding cache via ProfileService.SaveAllProfilesAsync)
+            // Or, if OnAppClosingAsync in ViewModel calls SaveAllProfiles, this might be redundant
+            // Let's ensure the embedding cache is saved directly if not covered by ViewModel's closing logic.
+            if (_profileServiceInstance != null)
+            {
+                // If your ViewModel's OnAppClosingAsync calls _profileService.SaveAllProfilesAsync(),
+                // then the embedding cache is saved there.
+                // If not, explicitly save it here or ensure ProfileService does it.
+                // For safety, let's call SaveCacheToFile on the embedding cache instance.
+                // Better: ProfileService's SaveAllProfilesAsync should call it.
+                // The modified ProfileService.SaveAllProfilesAsync now saves the cache.
+            }
+            if (_embeddingCacheServiceInstance != null)
+            {
+                _embeddingCacheServiceInstance.SaveCacheToFile();
+                SimpleFileLogger.Log("MainWindow: Embedding cache saved explicitly on closing.");
+            }
+
 
             _clipService?.Dispose();
             SimpleFileLogger.Log("MainWindow: Serwis CLIP zatrzymany.");
@@ -138,7 +163,6 @@ namespace CosplayManager
 
         private async void TestClipButton_Click(object sender, RoutedEventArgs e)
         {
-            // ... (bez zmian)
             if (_clipService == null)
             {
                 MessageBox.Show("Us³uga CLIP nie zosta³a zainicjalizowana.", "B³¹d us³ugi", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -178,7 +202,17 @@ namespace CosplayManager
 
                 try
                 {
-                    float[]? embedding = await _clipService.GetImageEmbeddingFromPathAsync(imageFilePath);
+                    // Test directly with ProfileService to use the cache
+                    float[]? embedding = null;
+                    if (_profileServiceInstance != null)
+                    {
+                        embedding = await _profileServiceInstance.GetImageEmbeddingAsync(imageFilePath);
+                    }
+                    else // Fallback or direct call if profile service not ready (should not happen in normal flow)
+                    {
+                        embedding = await _clipService.GetImageEmbeddingFromPathAsync(imageFilePath);
+                    }
+
                     if (embedding != null && embedding.Any())
                     {
                         string message = $"Uzyskano wektor cech dla obrazu:\n{Path.GetFileName(imageFilePath)}\n\n" +
@@ -203,23 +237,16 @@ namespace CosplayManager
                 }
             }
         }
-
-        // === NOWA METODA OBS£UGI ZAZNACZENIA W TreeView ===
         private void ProfilesTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
         {
             if (_viewModelInstance != null && e.NewValue is CategoryProfile selectedCharacterProfile)
             {
                 _viewModelInstance.SelectedProfile = selectedCharacterProfile;
             }
-            // Jeœli zaznaczono wêze³ modelki (ModelDisplayViewModel), mo¿emy chcieæ wyczyœciæ SelectedProfile
-            // lub zaimplementowaæ inn¹ logikê (np. wyœwietlanie podsumowania modelki).
-            // Na razie, jeœli nie jest to CategoryProfile, SelectedProfile pozostanie niezmienione
-            // lub mo¿na je wyzerowaæ, jeœli poprzednio by³ wybrany CategoryProfile.
             else if (_viewModelInstance != null && !(e.NewValue is CategoryProfile))
             {
-                // Jeœli zaznaczono wêze³ modelki (a nie postaci), wyczyœæ zaznaczenie profilu postaci.
-                // _viewModelInstance.SelectedProfile = null; // Opcjonalne - zale¿y od po¿¹danego zachowania.
-                // Na razie nie róbmy nic, aby edytor pozosta³ z danymi ostatnio wybranej postaci.
+                // Optional: Clear selection or handle model node selection
+                // _viewModelInstance.SelectedProfile = null; 
             }
         }
     }
