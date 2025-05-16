@@ -25,7 +25,6 @@
         <converters:CountToBoolConverter x:Key="CountToBoolConverter"/>
         <converters:TypeCheckConverter x:Key="TypeCheckConverter" />
         <converters:SplitSuggestionToColorConverter x:Key="SplitSuggestionToColorConverter"/>
-
     </Window.Resources>
 
     <Grid>
@@ -116,25 +115,22 @@
                                                   CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
                                             <MenuItem.Header>
                                                 <TextBlock>
-                                                    <Run Text="Przeskanuj foldery 'Mix' dla: "/>
-                                                    <Run Text="{Binding Path=PlacementTarget.DataContext.ModelName, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue='Modelki'}"/>
+                                                    <Run Text="Przeskanuj 'Mix' dla: "/>
+                                                    <Run Text="{Binding Path=PlacementTarget.DataContext.ModelName, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue='Modelki'}" FontWeight="Bold"/>
                                                 </TextBlock>
                                             </MenuItem.Header>
                                         </MenuItem>
                                         <MenuItem Command="{Binding AnalyzeModelForSplittingCommand}"
                                                   CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
                                             <MenuItem.Header>
-                                                <TextBlock Text="Analizuj Modelkę pod kątem podziału profili"/>
+                                                <TextBlock Text="Analizuj Modelkę pod kątem podziału"/>
                                             </MenuItem.Header>
                                         </MenuItem>
-                                        <MenuItem Header="Sprawdź Sugestie dla tej Postaci"
-          Command="{Binding CheckCharacterSuggestionsCommand}"
-          CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
                                         <MenuItem Command="{Binding RemoveModelTreeCommand}"
                                                   CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
                                             <MenuItem.Header>
                                                 <TextBlock>
-                                                    <Run Text="Usuń Całą Modelkę: "/>
+                                                    <Run Text="Usuń Modelkę: "/>
                                                     <Run Text="{Binding Path=PlacementTarget.DataContext.ModelName, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue='Modelkę'}" FontWeight="Bold"/>
                                                 </TextBlock>
                                             </MenuItem.Header>
@@ -161,22 +157,38 @@
                                         Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType={x:Type TreeView}}}">
                                 <StackPanel.ContextMenu>
                                     <ContextMenu DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}">
-                                        <MenuItem Header="Sprawdź Sugestie dla tej Postaci"
-                                                  Command="{Binding CheckCharacterSuggestionsCommand}"
-                                                  CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
-                                        <MenuItem Header="Zaproponuj podział profilu Postaci"
-                                                  Command="{Binding OpenSplitProfileDialogCommand}"
+                                        <MenuItem Command="{Binding CheckCharacterSuggestionsCommand}"
+                                                  CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                            <MenuItem.Header>
+                                                <TextBlock>
+                                                    <Run Text="Sprawdź sugestie dla: "/>
+                                                    <Run Text="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource CategoryProfileToCharacterNameConverter}, FallbackValue='Postaci'}" FontWeight="Bold"/>
+                                                </TextBlock>
+                                            </MenuItem.Header>
+                                        </MenuItem>
+                                        <MenuItem Command="{Binding OpenSplitProfileDialogCommand}"
                                                   CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                                                  Visibility="{Binding Path=PlacementTarget.DataContext.HasSplitSuggestion, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BooleanToVisibilityConverter}}"/>
-                                        <MenuItem Header="Usuń profil Postaci" 
-                                                  Command="{Binding RemoveProfileCommand}" 
-                                                  CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                                  Visibility="{Binding Path=PlacementTarget.DataContext.HasSplitSuggestion, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                            <MenuItem.Header>
+                                                <TextBlock Text="Zaproponuj podział profilu Postaci"/>
+                                            </MenuItem.Header>
+                                        </MenuItem>
+                                        <MenuItem Command="{Binding RemoveProfileCommand}" 
+                                                  CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                            <MenuItem.Header>
+                                                <TextBlock>
+                                                    <Run Text="Usuń profil: "/>
+                                                    <Run Text="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource CategoryProfileToCharacterNameConverter}, FallbackValue='Postaci'}" FontWeight="Bold"/>
+                                                </TextBlock>
+                                            </MenuItem.Header>
+                                        </MenuItem>
                                     </ContextMenu>
                                 </StackPanel.ContextMenu>
 
                                 <iconPacks:PackIconMaterial Kind="AccountOutline" VerticalAlignment="Center" Margin="0,0,5,0"
                                                             Foreground="{Binding HasSplitSuggestion, Converter={StaticResource SplitSuggestionToColorConverter}, FallbackValue='Black'}"/>
-                                <TextBlock Text="{Binding Converter={StaticResource CategoryProfileToCharacterNameConverter}}"/>
+                                <TextBlock Text="{Binding Converter={StaticResource CategoryProfileToCharacterNameConverter}}" 
+                                           ToolTip="{Binding CategoryName}"/>
                                 <TextBlock Text=" [" Foreground="DimGray" Margin="2,0,0,0"/>
                                 <TextBlock Text="{Binding ImageCountInProfile}" Foreground="DimGray"/>
                                 <TextBlock Text=" obr.]" Foreground="DimGray"/>
