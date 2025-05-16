@@ -1,4 +1,4 @@
-﻿// Plik: Services/ProfileService.cs
+﻿// File: Services/ProfileService.cs
 using CosplayManager.Models;
 using CosplayManager.Utils;
 using System;
@@ -14,6 +14,7 @@ namespace CosplayManager.Services
     {
         private List<CategoryProfile> _profiles;
         private readonly ClipServiceHttpClient _clipService;
+        private readonly EmbeddingCacheService _embeddingCacheService; // Added
         private readonly string _profilesBaseFolderPath;
 
         private class ModelProfilesFileContent
@@ -22,9 +23,11 @@ namespace CosplayManager.Services
             public List<CategoryProfile> CharacterProfiles { get; set; } = new List<CategoryProfile>();
         }
 
-        public ProfileService(ClipServiceHttpClient clipService, string profilesFolderName = "CategoryProfiles")
+        // Modified constructor
+        public ProfileService(ClipServiceHttpClient clipService, EmbeddingCacheService embeddingCacheService, string profilesFolderName = "CategoryProfiles")
         {
             _clipService = clipService ?? throw new ArgumentNullException(nameof(clipService));
+            _embeddingCacheService = embeddingCacheService ?? throw new ArgumentNullException(nameof(embeddingCacheService)); // Added
             _profilesBaseFolderPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, profilesFolderName);
 
             if (!Directory.Exists(_profilesBaseFolderPath))
@@ -74,6 +77,7 @@ namespace CosplayManager.Services
             return name.Trim();
         }
 
+        // Modified to use EmbeddingCacheService
         public async Task<float[]?> GetImageEmbeddingAsync(string imagePath)
         {
             if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
@@ -83,7 +87,12 @@ namespace CosplayManager.Services
             }
             try
             {
-                return await _clipService.GetImageEmbeddingFromPathAsync(imagePath);
+                // Use the cache service here
+                return await _embeddingCacheService.GetOrUpdateEmbeddingAsync(imagePath, async (path) =>
+                {
+                    SimpleFileLogger.Log($"Embedding provider called for: {path}");
+                    return await _clipService.GetImageEmbeddingFromPathAsync(path);
+                });
             }
             catch (Exception ex)
             {
@@ -139,6 +148,7 @@ namespace CosplayManager.Services
 
             foreach (var imagePath in imagePaths)
             {
+                // This call will now use the cache
                 float[]? embedding = await GetImageEmbeddingAsync(imagePath);
                 if (embedding != null)
                 {
@@ -245,6 +255,9 @@ namespace CosplayManager.Services
                 modelsSavedCount++;
             }
             SimpleFileLogger.Log($"SaveAllProfilesAsync: Zakończono. Zapisano profile dla {modelsSavedCount} modelek.");
+
+            // Save the embedding cache when all profiles are saved
+            _embeddingCacheService.SaveCacheToFile();
         }
 
         public async Task LoadProfilesAsync()
@@ -272,10 +285,34 @@ namespace CosplayManager.Services
                     {
                         foreach (var profile in fileContent.CharacterProfiles)
                         {
-                            if (!profile.CategoryName.StartsWith(fileContent.ModelName + " - ", StringComparison.OrdinalIgnoreCase))
+                            // Ensure CategoryName is fully qualified with ModelName
+                            // This logic ensures that if a profile was saved with a partial name, it gets corrected.
+                            // It's important especially if CategoryName was manually edited or came from an older format.
+                            string expectedPrefix = $"{fileContent.ModelName} - ";
+                            if (!profile.CategoryName.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase) &&
+                                !profile.CategoryName.Equals(fileContent.ModelName, StringComparison.OrdinalIgnoreCase)) // Handles cases where character name might be "General" or similar
                             {
-                                profile.CategoryName = $"{fileContent.ModelName} - {profile.CategoryName}";
+                                // Check if the profile category name is just the character part
+                                string characterPart = GetCharacterNameFromCategory(profile.CategoryName);
+                                if (characterPart.Equals(profile.CategoryName, StringComparison.OrdinalIgnoreCase)) // It's only the character part
+                                {
+                                    profile.CategoryName = $"{fileContent.ModelName} - {profile.CategoryName}";
+                                }
+                                // else, the name might be complex or already correct but not matching model name, log it
+                                else if (!GetModelNameFromCategory(profile.CategoryName).Equals(fileContent.ModelName, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    SimpleFileLogger.LogWarning($"LoadProfilesAsync: Profile '{profile.CategoryName}' in file '{Path.GetFileName(filePath)}' for model '{fileContent.ModelName}' has a mismatched model prefix. Attempting to correct to '{fileContent.ModelName} - {characterPart}'.");
+                                    profile.CategoryName = $"{fileContent.ModelName} - {characterPart}";
+                                }
+                                // If it already contains " - " but the model part is wrong, it's a more complex issue.
+                                // The above logic tries a simple correction.
                             }
+                            else if (profile.CategoryName.Equals(fileContent.ModelName, StringComparison.OrdinalIgnoreCase)) // if category is just model name, assume "General"
+                            {
+                                profile.CategoryName = $"{fileContent.ModelName} - General";
+                            }
+
+
                             _profiles.Add(profile);
                             profilesLoadedTotal++;
                         }
@@ -356,7 +393,6 @@ namespace CosplayManager.Services
             return false;
         }
 
-        // NOWA METODA do usunięcia wszystkich profili dla modelki i jej pliku .json
         public async Task<bool> RemoveAllProfilesForModelAsync(string modelName)
         {
             if (string.IsNullOrWhiteSpace(modelName))
@@ -367,11 +403,9 @@ namespace CosplayManager.Services
 
             SimpleFileLogger.Log($"RemoveAllProfilesForModelAsync: Próba usunięcia wszystkich profili i pliku dla modelki '{modelName}'.");
 
-            // Usuń profile z pamięci podręcznej _profiles
             int removedCount = _profiles.RemoveAll(p => GetModelNameFromCategory(p.CategoryName).Equals(modelName, StringComparison.OrdinalIgnoreCase));
             SimpleFileLogger.Log($"RemoveAllProfilesForModelAsync: Usunięto {removedCount} profili postaci dla modelki '{modelName}' z pamięci.");
 
-            // Usuń plik .json tej modelki
             string sanitizedModelName = SanitizeFileName(modelName);
             string modelProfilePath = Path.Combine(_profilesBaseFolderPath, $"{sanitizedModelName}.json");
 
@@ -381,24 +415,18 @@ namespace CosplayManager.Services
                 {
                     File.Delete(modelProfilePath);
                     SimpleFileLogger.Log($"RemoveAllProfilesForModelAsync: Pomyślnie usunięto plik profilu: {modelProfilePath}");
-                    return true; // Zwracamy true, nawet jeśli nie było profili w pamięci, ale plik został usunięty
+                    return true;
                 }
                 catch (Exception ex)
                 {
                     SimpleFileLogger.LogError($"RemoveAllProfilesForModelAsync: Błąd podczas usuwania pliku profilu '{modelProfilePath}'.", ex);
-                    // Mimo błędu usunięcia pliku, profile z pamięci zostały usunięte,
-                    // więc możemy rozważyć to jako częściowy sukces.
-                    // Dla spójności, jeśli usunięcie pliku się nie powiedzie, można by przywrócić profile do pamięci,
-                    // ale to komplikuje logikę. Na razie zwracamy false jeśli plik nie mógł być usunięty.
                     return false;
                 }
             }
             else
             {
                 SimpleFileLogger.Log($"RemoveAllProfilesForModelAsync: Plik profilu '{modelProfilePath}' nie istniał. Nic do usunięcia z dysku.");
-                // Jeśli nie było też profili w pamięci (removedCount == 0), to można uznać, że modelki "nie było"
-                // Jeśli były profile w pamięci, a pliku nie, to jest to niespójność, ale już ją naprawiliśmy usuwając z pamięci.
-                return removedCount > 0; // Zwróć true, jeśli cokolwiek (z pamięci) zostało usunięte
+                return removedCount > 0;
             }
         }
     }
