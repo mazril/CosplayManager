@@ -1,11 +1,11 @@
-﻿// File: Services/EmbeddingCacheService.cs
-using CosplayManager.Models; // Assuming ImageFileEntry might be used or a similar structure
+﻿// Plik: Services/EmbeddingCacheService.cs
+using CosplayManager.Models;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
-using System.Linq; // Required for Linq operations like ToDictionary
+using System.Linq;
 
 namespace CosplayManager.Services
 {
@@ -13,7 +13,7 @@ namespace CosplayManager.Services
     {
         public float[] Embedding { get; set; }
         public DateTime LastModifiedUtc { get; set; }
-        public long FileSize { get; set; } // Added FileSize for an extra check
+        public long FileSize { get; set; }
     }
 
     public class EmbeddingCacheService
@@ -65,7 +65,6 @@ namespace CosplayManager.Services
             {
                 try
                 {
-                    // Create a defensive copy for serialization
                     var cacheCopy = new Dictionary<string, EmbeddingCacheEntry>(_embeddingCache, StringComparer.OrdinalIgnoreCase);
                     var options = new JsonSerializerOptions { WriteIndented = true };
                     string json = JsonSerializer.Serialize(cacheCopy, options);
@@ -79,30 +78,39 @@ namespace CosplayManager.Services
             }
         }
 
-        public async Task<float[]?> GetOrUpdateEmbeddingAsync(string imagePath, Func<string, Task<float[]?>> embeddingProvider)
+        // ZMODYFIKOWANA SYGNATURA METODY
+        public async Task<float[]?> GetOrUpdateEmbeddingAsync(
+            string imagePath,
+            DateTime currentFileLastModifiedUtc, // Przekazywana wartość
+            long currentFileSize,                // Przekazywana wartość
+            Func<string, Task<float[]?>> embeddingProvider)
         {
-            if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+            if (string.IsNullOrWhiteSpace(imagePath)) // Usunięto File.Exists, bo zakładamy, że plik istnieje, skoro mamy jego metadane
             {
-                SimpleFileLogger.LogWarning($"GetOrUpdateEmbeddingAsync: Invalid path or file does not exist: {imagePath}");
+                SimpleFileLogger.LogWarning($"GetOrUpdateEmbeddingAsync: Invalid path: {imagePath}");
                 return null;
             }
 
-            FileInfo fileInfo = new FileInfo(imagePath);
-            DateTime currentLastModifiedUtc = fileInfo.LastWriteTimeUtc;
-            long currentFileSize = fileInfo.Length;
+            // Usunięto:
+            // FileInfo fileInfo = new FileInfo(imagePath);
+            // DateTime currentLastModifiedUtc = fileInfo.LastWriteTimeUtc;
+            // long currentFileSize = fileInfo.Length;
 
             lock (_cacheLock)
             {
                 if (_embeddingCache.TryGetValue(imagePath, out EmbeddingCacheEntry cachedEntry))
                 {
-                    if (cachedEntry.LastModifiedUtc == currentLastModifiedUtc && cachedEntry.FileSize == currentFileSize && cachedEntry.Embedding != null)
+                    // Używamy przekazanych currentFileLastModifiedUtc i currentFileSize
+                    if (cachedEntry.LastModifiedUtc == currentFileLastModifiedUtc &&
+                        cachedEntry.FileSize == currentFileSize &&
+                        cachedEntry.Embedding != null)
                     {
                         SimpleFileLogger.Log($"Cache hit for: {imagePath}");
                         return cachedEntry.Embedding;
                     }
                     else
                     {
-                        SimpleFileLogger.Log($"Cache invalid for: {imagePath}. CachedMod: {cachedEntry.LastModifiedUtc}, CurrentMod: {currentLastModifiedUtc}, CachedSize: {cachedEntry.FileSize}, CurrentSize: {currentFileSize}");
+                        SimpleFileLogger.Log($"Cache invalid for: {imagePath}. CachedMod: {cachedEntry.LastModifiedUtc}, CurrentMod: {currentFileLastModifiedUtc}, CachedSize: {cachedEntry.FileSize}, CurrentSize: {currentFileSize}");
                     }
                 }
             }
@@ -117,13 +125,10 @@ namespace CosplayManager.Services
                     _embeddingCache[imagePath] = new EmbeddingCacheEntry
                     {
                         Embedding = newEmbedding,
-                        LastModifiedUtc = currentLastModifiedUtc,
-                        FileSize = currentFileSize
+                        LastModifiedUtc = currentFileLastModifiedUtc, // Używamy przekazanej wartości
+                        FileSize = currentFileSize                    // Używamy przekazanej wartości
                     };
                 }
-                // Consider saving cache more strategically (e.g., on app close, periodically, or after N changes)
-                // For now, let's save it less frequently, e.g. explicitly or on app shutdown.
-                // SaveCacheToFile(); // Removed immediate save to avoid frequent I/O
             }
             return newEmbedding;
         }
