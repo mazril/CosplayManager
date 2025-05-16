@@ -1,15 +1,15 @@
 ﻿// Plik: Models/ProposedMove.cs
 namespace CosplayManager.Models
 {
-    public enum ProposedMoveActionType
+    public enum ProposedMoveActionType // Zmieniono na public
     {
-        CopyNew,             // Kopiuj jako nowy plik (bo nie ma konfliktu lub znaczącego duplikatu)
-        OverwriteExisting,   // Nadpisz istniejący plik, bo źródło jest lepsze
-        KeepExistingDeleteSource, // Zachowaj istniejący plik (jest lepszy/taki sam), usuń źródło
-        ConflictKeepBoth    // Konflikt, gdzie nie można automatycznie zdecydować - zapisz źródło obok
+        CopyNew,
+        OverwriteExisting,
+        KeepExistingDeleteSource,
+        ConflictKeepBoth
     }
 
-    public class ProposedMove
+    public class ProposedMove // Zmieniono na public
     {
         public ImageFileEntry SourceImage { get; set; }
         public ImageFileEntry? TargetImage { get; set; }
