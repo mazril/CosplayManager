@@ -25,6 +25,7 @@
         <converters:StringCollectionToStringConverter x:Key="StringCollectionToStringConverter"/>
         <converters:CountToBoolConverter x:Key="CountToBoolConverter"/>
         <converters:SplitSuggestionToColorConverter x:Key="SplitSuggestionToColorConverter"/>
+        <converters:TypeCheckConverter x:Key="TypeCheckConverter"/>
     </Window.Resources>
 
     <Grid>
@@ -85,7 +86,7 @@
                         <TextBlock Text="Nazwy folderów źródłowych (Mix, oddzielone przecinkiem):" Margin="0,5,0,2"/>
                         <TextBox Text="{Binding SourceFolderNamesInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
 
-                        <TextBlock Text="Próg podobieństwa dla sugestii (0.0 - 1.0):" Margin="0,5,0,2"/>
+                        <TextBlock Text="Próg podobieństwa dla sugestii (0.1 - 1.0):" Margin="0,5,0,2"/>
                         <Slider Value="{Binding SuggestionSimilarityThreshold, Mode=TwoWay}" Minimum="0.1" Maximum="1.0" SmallChange="0.01" LargeChange="0.05" TickFrequency="0.05" IsSnapToTickEnabled="False"/>
                         <TextBlock Text="{Binding SuggestionSimilarityThreshold, StringFormat='N2'}" HorizontalAlignment="Right" Margin="0,-15,5,0"/>
 
@@ -102,6 +103,7 @@
                     <TreeView.ItemContainerStyle>
                         <Style TargetType="{x:Type TreeViewItem}">
                             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                            <Setter Property="Padding" Value="2"/>
                         </Style>
                     </TreeView.ItemContainerStyle>
 
@@ -247,7 +249,7 @@
                     </StackPanel>
                 </GroupBox>
 
-                <Button Grid.Row="1" Content="Załaduj Miniaturki dla Widocznych Obrazów" 
+                <Button Grid.Row="1" Content="Załaduj Miniaturki dla Wyświetlanych Obrazów" 
                         Command="{Binding EnsureThumbnailsLoadedCommand}"
                         CommandParameter="{Binding ImageFiles}" 
                         Margin="0,5,0,5" Padding="10,3" HorizontalAlignment="Stretch"
@@ -312,7 +314,7 @@
             <StatusBarItem Grid.Column="1" HorizontalAlignment="Right">
                 <ProgressBar Width="150" Height="15" Margin="5,0"
                              IsIndeterminate="True" 
-                             Visibility="{Binding Path=IsBusy, Converter={StaticResource BooleanToVisibilityConverter}, FallbackValue=Collapsed}"/>
+                             Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}, FallbackValue=Collapsed}"/>
             </StatusBarItem>
 
             <StatusBarItem Grid.Column="2" HorizontalAlignment="Right">

@@ -295,7 +295,7 @@ namespace CosplayManager.ViewModels
                 }
                 else if (_activeLongOperationCts != null)
                 {
-                     SimpleFileLogger.Log($"RunLongOperation: CTS dla tokenu {token.GetHashCode()} NIE został usunięty, ponieważ aktywny CTS ma token {_activeLongOperationCts.Token.GetHashCode()}.");
+                    SimpleFileLogger.Log($"RunLongOperation: CTS dla tokenu {token.GetHashCode()} NIE został usunięty, ponieważ aktywny CTS ma token {_activeLongOperationCts.Token.GetHashCode()}.");
                 }
                 else
                 {
@@ -759,7 +759,7 @@ namespace CosplayManager.ViewModels
             catch (Exception ex)
             {
                 SimpleFileLogger.LogError("Błąd podczas wybierania folderu biblioteki (Ookii Dialogs)", ex);
-                 MessageBox.Show($"Wystąpił błąd przy próbie otwarcia dialogu wyboru folderu: {ex.Message}\nUpewnij się, że biblioteka Ookii.Dialogs.Wpf jest poprawnie zainstalowana i skonfigurowana.", "Błąd dialogu folderu", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Wystąpił błąd przy próbie otwarcia dialogu wyboru folderu: {ex.Message}\nUpewnij się, że biblioteka Ookii.Dialogs.Wpf jest poprawnie zainstalowana i skonfigurowana.", "Błąd dialogu folderu", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -1043,7 +1043,7 @@ namespace CosplayManager.ViewModels
                 int suggestionsMade = 0;
 
                 var characterProfilesToProcess = modelVM.CharacterProfiles.ToList(); // Kopia na potrzeby iteracji, jeśli byłyby modyfikacje
-                
+
                 foreach (var mixFolderNamePattern in configuredMixedFolderNames)
                 {
                     token.ThrowIfCancellationRequested();
@@ -1061,7 +1061,7 @@ namespace CosplayManager.ViewModels
                             token.ThrowIfCancellationRequested();
                             ImageFileEntry? sourceImageEntry = await _imageMetadataService.ExtractMetadataAsync(imagePath);
                             if (sourceImageEntry == null) continue;
-                            
+
                             float[]? sourceEmbedding = await _profileService.GetImageEmbeddingAsync(sourceImageEntry.FilePath);
                             if (sourceEmbedding == null) continue;
                             imagesWithEmbeddings++;
@@ -1121,13 +1121,14 @@ namespace CosplayManager.ViewModels
 
                 var allProposedMovesAcrossModels = new List<Models.ProposedMove>();
                 await Application.Current.Dispatcher.InvokeAsync(() => {
-                    foreach (var mVM_ui in HierarchicalProfilesList) {
+                    foreach (var mVM_ui in HierarchicalProfilesList)
+                    {
                         mVM_ui.PendingSuggestionsCount = 0;
                         foreach (var cp_ui in mVM_ui.CharacterProfiles) cp_ui.PendingSuggestionsCount = 0;
                     }
                 });
                 token.ThrowIfCancellationRequested();
-                
+
                 var currentHierarchicalModels = HierarchicalProfilesList.ToList(); // Kopia do iteracji
 
                 foreach (var modelVM_iterator in currentHierarchicalModels)
@@ -1180,7 +1181,7 @@ namespace CosplayManager.ViewModels
                         var previewWindow = new PreviewChangesWindow { DataContext = previewVM, Owner = Application.Current.MainWindow };
                         actualTypedWindow.SetCloseAction(previewVM);
                         dialogOutcome = previewWindow.ShowDialog();
-                        if(dialogOutcome == true) approvedMovesFromDialog = previewVM.GetApprovedMoves();
+                        if (dialogOutcome == true) approvedMovesFromDialog = previewVM.GetApprovedMoves();
                     });
                     token.ThrowIfCancellationRequested();
 
@@ -1279,13 +1280,13 @@ namespace CosplayManager.ViewModels
                 {
                     bool? dialogOutcome = false;
                     List<Models.ProposedMove> approvedMovesFromDialog = new List<Models.ProposedMove>();
-                     await Application.Current.Dispatcher.InvokeAsync(() =>
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
                     {
                         var previewVM = new PreviewChangesViewModel(actualSuggestionsToShow, SuggestionSimilarityThreshold);
                         var previewWindow = new PreviewChangesWindow { DataContext = previewVM, Owner = Application.Current.MainWindow };
                         actualTypedWindow.SetCloseAction(previewVM);
                         dialogOutcome = previewWindow.ShowDialog();
-                        if(dialogOutcome == true) approvedMovesFromDialog = previewVM.GetApprovedMoves();
+                        if (dialogOutcome == true) approvedMovesFromDialog = previewVM.GetApprovedMoves();
                     });
                     token.ThrowIfCancellationRequested();
 
@@ -1310,7 +1311,7 @@ namespace CosplayManager.ViewModels
 
         private void RefreshPendingSuggestionCountsFromCache()
         {
-             Application.Current.Dispatcher.Invoke(() => { // Upewnij się, że modyfikacje kolekcji są w wątku UI
+            Application.Current.Dispatcher.Invoke(() => { // Upewnij się, że modyfikacje kolekcji są w wątku UI
                 SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache. Próg: {SuggestionSimilarityThreshold:F4}. Cache dla: '{_lastScannedModelNameForSuggestions ?? "BRAK"}'. Sugestii w cache: {_lastModelSpecificSuggestions?.Count ?? -1}");
 
                 if (string.IsNullOrEmpty(_lastScannedModelNameForSuggestions))
@@ -1391,7 +1392,9 @@ namespace CosplayManager.ViewModels
                             if (sourceSize > targetSizeConflict * 1.1) // np. o 10% większe
                             {
                                 await Task.Run(() => File.Copy(sourcePath, targetPath, true), token);
-                            } else {
+                            }
+                            else
+                            {
                                 skippedQuality++; // Zachowaj istniejący jeśli nie ma dużej różnicy
                             }
                             opSuccess = true; deleteSource = true;
@@ -1458,12 +1461,12 @@ namespace CosplayManager.ViewModels
                     List<string> filesInDir;
                     try { filesInDir = Directory.GetFiles(charPath).Where(f => _fileScannerService.IsExtensionSupported(Path.GetExtension(f))).ToList(); }
                     catch { filesInDir = new List<string>(); }
-                    
-                    foreach(var p in filesInDir)
+
+                    foreach (var p in filesInDir)
                     {
                         token.ThrowIfCancellationRequested();
                         var entry = await _imageMetadataService.ExtractMetadataAsync(p);
-                        if(entry != null) entries.Add(entry);
+                        if (entry != null) entries.Add(entry);
                     }
                     token.ThrowIfCancellationRequested();
                     await _profileService.GenerateProfileAsync(profileName, entries);
@@ -1505,7 +1508,7 @@ namespace CosplayManager.ViewModels
                     newFileName = $"{safeBaseName}_{Guid.NewGuid().ToString("N").Substring(0, 8)}{extension}";
                     finalTargetPath = Path.Combine(targetDirectory, newFileName);
                     SimpleFileLogger.LogWarning($"GenerateUniqueTargetPath: Przekroczono limit prób dla '{suffixBase}'. Użyto GUID: {newFileName}");
-                    break; 
+                    break;
                 }
                 counter++;
             } while (File.Exists(finalTargetPath));
@@ -1554,7 +1557,7 @@ namespace CosplayManager.ViewModels
                     foreach (var cp_ui in modelVM.CharacterProfiles) cp_ui.HasSplitSuggestion = false;
                 });
                 token.ThrowIfCancellationRequested();
-                
+
                 var charProfilesCopy = modelVM.CharacterProfiles.ToList();
 
                 foreach (var charProfile in charProfilesCopy)
@@ -1577,10 +1580,10 @@ namespace CosplayManager.ViewModels
                     if (embeddings.Count < minImgConsider) continue;
 
                     bool foundSplit = embeddings.Count >= minImgSignificant; // Placeholder
-                    
+
                     var uiProfileInstance = modelVM.CharacterProfiles.FirstOrDefault(p => p.CategoryName == charProfile.CategoryName);
-                    if(uiProfileInstance != null) uiProfileInstance.HasSplitSuggestion = foundSplit;
-                    
+                    if (uiProfileInstance != null) uiProfileInstance.HasSplitSuggestion = foundSplit;
+
                     if (foundSplit) markedForSplit++;
                 }
                 token.ThrowIfCancellationRequested();
@@ -1608,7 +1611,8 @@ namespace CosplayManager.ViewModels
                         if (File.Exists(path))
                         {
                             var entry = await _imageMetadataService.ExtractMetadataAsync(path);
-                            if(entry != null) {
+                            if (entry != null)
+                            {
                                 imagesInProf.Add(entry);
                                 // Ładowanie miniatur asynchronicznie, ale nie czekamy tutaj na wszystkie
                                 // Zostanie to obsłużone przez EnsureThumbnailsLoadedCommand w oknie SplitProfile lub podobnym mechanizmie
@@ -1681,7 +1685,7 @@ namespace CosplayManager.ViewModels
                     StatusMessage = "Brak obrazów do załadowania miniaturek.";
                     return;
                 }
-                
+
                 SimpleFileLogger.Log($"EnsureThumbnailsLoaded: Ładowanie miniaturek dla {imagesList.Count} obrazów. Token: {token.GetHashCode()}");
                 int count = 0;
                 List<Task> thumbnailTasks = new List<Task>();
