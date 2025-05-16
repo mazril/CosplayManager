@@ -106,12 +106,11 @@
 
                     <TreeView.ItemTemplate>
                         <HierarchicalDataTemplate DataType="{x:Type viewmodels:ModelDisplayViewModel}" ItemsSource="{Binding CharacterProfiles}">
-                            <StackPanel Orientation="Horizontal" 
-                                        Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType={x:Type TreeView}}}">
+                            <StackPanel Orientation="Horizontal">
                                 <StackPanel.ContextMenu>
-                                    <ContextMenu DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}">
+                                    <ContextMenu DataContext="{Binding DataContext, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type TreeView}}}">
                                         <MenuItem Command="{Binding MatchModelSpecificCommand}"
-                                                  CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
                                             <MenuItem.Header>
                                                 <TextBlock>
                                                     <Run Text="Szukaj dopasowań dla: "/>
@@ -146,12 +145,11 @@
 
                     <TreeView.Resources>
                         <HierarchicalDataTemplate DataType="{x:Type models:CategoryProfile}">
-                            <StackPanel Orientation="Horizontal"
-                                        Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType={x:Type TreeView}}}">
+                            <StackPanel Orientation="Horizontal">
                                 <StackPanel.ContextMenu>
-                                    <ContextMenu DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}">
+                                    <ContextMenu DataContext="{Binding DataContext, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type TreeView}}}">
                                         <MenuItem Command="{Binding CheckCharacterSuggestionsCommand}"
-                                                  CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
                                             <MenuItem.Header>
                                                 <TextBlock>
                                                     <Run Text="Sprawdź sugestie dla: "/>
