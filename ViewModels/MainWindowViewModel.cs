@@ -46,6 +46,7 @@ namespace CosplayManager.ViewModels
                 {
                     UpdateEditFieldsFromSelectedProfile();
                     OnPropertyChanged(nameof(IsProfileSelected));
+                    // Zaktualizowano, aby odwoływać się do nowej metody CanExecuteRemoveProfile
                     (RemoveProfileCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (CheckCharacterSuggestionsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (OpenSplitProfileDialogCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
@@ -196,7 +197,8 @@ namespace CosplayManager.ViewModels
             LoadProfilesCommand = new AsyncRelayCommand(ExecuteLoadProfilesAsync);
             GenerateProfileCommand = new AsyncRelayCommand(ExecuteGenerateProfileAsync, CanExecuteGenerateProfile);
             SaveProfilesCommand = new AsyncRelayCommand(ExecuteSaveAllProfilesAsync, CanExecuteSaveAllProfiles);
-            RemoveProfileCommand = new AsyncRelayCommand(ExecuteRemoveProfileAsync, _ => IsProfileSelected);
+            // ZMIANA TUTAJ: Użycie nowej metody CanExecuteRemoveProfile
+            RemoveProfileCommand = new AsyncRelayCommand(ExecuteRemoveProfileAsync, CanExecuteRemoveProfile);
             AddFilesToProfileCommand = new RelayCommand(ExecuteAddFilesToProfile);
             ClearFilesFromProfileCommand = new RelayCommand(ExecuteClearFilesFromProfile, _ => ImageFiles.Any());
             CreateNewProfileSetupCommand = new RelayCommand(ExecuteCreateNewProfileSetup);
@@ -391,6 +393,13 @@ namespace CosplayManager.ViewModels
         private bool CanExecuteAutoCreateProfiles(object? arg) => !string.IsNullOrWhiteSpace(LibraryRootPath) && Directory.Exists(LibraryRootPath);
         private bool CanExecuteGenerateProfile(object? parameter = null) => !string.IsNullOrWhiteSpace(CurrentProfileNameForEdit) && !CurrentProfileNameForEdit.Equals("Nowa Kategoria", StringComparison.OrdinalIgnoreCase) && ImageFiles.Any();
         private bool CanExecuteSuggestImages(object? parameter = null) => !string.IsNullOrWhiteSpace(LibraryRootPath) && Directory.Exists(LibraryRootPath) && HierarchicalProfilesList.Any(m => m.HasCharacterProfiles) && !string.IsNullOrWhiteSpace(SourceFolderNamesInput);
+
+        // NOWA METODA CanExecute dla RemoveProfileCommand
+        private bool CanExecuteRemoveProfile(object? parameter)
+        {
+            return parameter is CategoryProfile;
+        }
+
         private bool CanExecuteCheckCharacterSuggestions(object? parameter)
         {
             return parameter is CategoryProfile profile &&
@@ -550,10 +559,12 @@ namespace CosplayManager.ViewModels
             {
                 profileToRemove = contextProfile;
             }
-            else if (SelectedProfile != null)
+            else if (SelectedProfile != null) // Fallback, jeśli parametr nie jest tym, czego oczekujemy
             {
                 profileToRemove = SelectedProfile;
+                SimpleFileLogger.LogWarning($"ExecuteRemoveProfileAsync: Parametr nie był typu CategoryProfile. Użyto SelectedProfile ('{SelectedProfile?.CategoryName}'). To może nie być oczekiwane dla menu kontekstowego.");
             }
+
 
             if (profileToRemove == null)
             {
