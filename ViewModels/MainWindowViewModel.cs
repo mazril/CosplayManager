@@ -44,9 +44,8 @@ namespace CosplayManager.ViewModels
                 string? oldSelectedProfileName = _selectedProfile?.CategoryName;
                 if (SetProperty(ref _selectedProfile, value))
                 {
-                    UpdateEditFieldsFromSelectedProfile();
+                    UpdateEditFieldsFromSelectedProfile(); // Ta metoda załaduje miniatury dla nowego SelectedProfile
                     OnPropertyChanged(nameof(IsProfileSelected));
-                    // Zaktualizowano, aby odwoływać się do nowej metody CanExecuteRemoveProfile
                     (RemoveProfileCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (CheckCharacterSuggestionsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                     (OpenSplitProfileDialogCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
@@ -54,7 +53,7 @@ namespace CosplayManager.ViewModels
                 if (_selectedProfile == null && oldSelectedProfileName != null &&
                     !_profileService.GetAllProfiles().Any(p => p.CategoryName == oldSelectedProfileName))
                 {
-                    UpdateEditFieldsFromSelectedProfile();
+                    UpdateEditFieldsFromSelectedProfile(); // Wyczyszczenie i załadowanie miniatur (pustych)
                 }
             }
         }
@@ -86,7 +85,7 @@ namespace CosplayManager.ViewModels
         public ObservableCollection<ImageFileEntry> ImageFiles
         {
             get => _imageFiles;
-            private set
+            private set // Zmieniono na private set, aby kontrolować dodawanie i ładowanie miniatur
             {
                 if (SetProperty(ref _imageFiles, value))
                 {
@@ -192,12 +191,11 @@ namespace CosplayManager.ViewModels
             _settingsService = settingsService ?? throw new ArgumentNullException(nameof(settingsService));
 
             HierarchicalProfilesList = new ObservableCollection<ModelDisplayViewModel>();
-            ImageFiles = new ObservableCollection<ImageFileEntry>();
+            ImageFiles = new ObservableCollection<ImageFileEntry>(); // Inicjalizacja tutaj
 
             LoadProfilesCommand = new AsyncRelayCommand(ExecuteLoadProfilesAsync);
             GenerateProfileCommand = new AsyncRelayCommand(ExecuteGenerateProfileAsync, CanExecuteGenerateProfile);
             SaveProfilesCommand = new AsyncRelayCommand(ExecuteSaveAllProfilesAsync, CanExecuteSaveAllProfiles);
-            // ZMIANA TUTAJ: Użycie nowej metody CanExecuteRemoveProfile
             RemoveProfileCommand = new AsyncRelayCommand(ExecuteRemoveProfileAsync, CanExecuteRemoveProfile);
             AddFilesToProfileCommand = new RelayCommand(ExecuteAddFilesToProfile);
             ClearFilesFromProfileCommand = new RelayCommand(ExecuteClearFilesFromProfile, _ => ImageFiles.Any());
@@ -268,7 +266,7 @@ namespace CosplayManager.ViewModels
         }
 
 
-        private void UpdateEditFieldsFromSelectedProfile()
+        private async void UpdateEditFieldsFromSelectedProfile() // Zmieniono na async void
         {
             if (_selectedProfile != null)
             {
@@ -288,26 +286,34 @@ namespace CosplayManager.ViewModels
                 var newImageFiles = new ObservableCollection<ImageFileEntry>();
                 if (_selectedProfile.SourceImagePaths != null)
                 {
+                    List<Task> thumbnailTasks = new List<Task>();
                     foreach (var path in _selectedProfile.SourceImagePaths)
                     {
                         if (File.Exists(path))
                         {
-                            newImageFiles.Add(new ImageFileEntry { FilePath = path, FileName = Path.GetFileName(path) });
+                            var entry = new ImageFileEntry { FilePath = path, FileName = Path.GetFileName(path) };
+                            newImageFiles.Add(entry);
+                            thumbnailTasks.Add(entry.LoadThumbnailAsync()); // Dodaj zadanie ładowania miniatury
                         }
                         else
                         {
                             SimpleFileLogger.LogWarning($"OSTRZEŻENIE (UpdateEditFields): Ścieżka obrazu '{path}' dla profilu '{_selectedProfile.CategoryName}' nie istnieje.");
                         }
                     }
+                    ImageFiles = newImageFiles; // Ustaw kolekcję
+                    await Task.WhenAll(thumbnailTasks); // Poczekaj na załadowanie wszystkich miniatur dla tego profilu
                 }
-                ImageFiles = newImageFiles;
+                else
+                {
+                    ImageFiles = new ObservableCollection<ImageFileEntry>(); // Pusta kolekcja, jeśli brak ścieżek
+                }
             }
             else
             {
                 CurrentProfileNameForEdit = string.Empty;
                 ModelNameInput = string.Empty;
                 CharacterNameInput = string.Empty;
-                ImageFiles = new ObservableCollection<ImageFileEntry>();
+                ImageFiles = new ObservableCollection<ImageFileEntry>(); // Pusta kolekcja
             }
         }
 
@@ -394,7 +400,6 @@ namespace CosplayManager.ViewModels
         private bool CanExecuteGenerateProfile(object? parameter = null) => !string.IsNullOrWhiteSpace(CurrentProfileNameForEdit) && !CurrentProfileNameForEdit.Equals("Nowa Kategoria", StringComparison.OrdinalIgnoreCase) && ImageFiles.Any();
         private bool CanExecuteSuggestImages(object? parameter = null) => !string.IsNullOrWhiteSpace(LibraryRootPath) && Directory.Exists(LibraryRootPath) && HierarchicalProfilesList.Any(m => m.HasCharacterProfiles) && !string.IsNullOrWhiteSpace(SourceFolderNamesInput);
 
-        // NOWA METODA CanExecute dla RemoveProfileCommand
         private bool CanExecuteRemoveProfile(object? parameter)
         {
             return parameter is CategoryProfile;
@@ -411,35 +416,15 @@ namespace CosplayManager.ViewModels
 
         private bool CanExecuteMatchModelSpecific(object? parameter)
         {
-            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Sprawdzanie warunków...");
+            //SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Sprawdzanie warunków..."); // Może być zbyt gadatliwe
             if (!(parameter is ModelDisplayViewModel modelVM))
             {
-                SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Parametr nie jest ModelDisplayViewModel. Wynik: false");
+                //SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Parametr nie jest ModelDisplayViewModel. Wynik: false");
                 return false;
             }
-            SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: Parametr OK, Modelka: {modelVM.ModelName}");
-
-            if (string.IsNullOrWhiteSpace(LibraryRootPath) || !Directory.Exists(LibraryRootPath))
-            {
-                SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: LibraryRootPath niepoprawny ('{LibraryRootPath}'). Wynik: false");
-                return false;
-            }
-            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: LibraryRootPath OK.");
-
-            if (!modelVM.HasCharacterProfiles)
-            {
-                SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: Modelka '{modelVM.ModelName}' nie ma profili postaci (HasCharacterProfiles: {modelVM.HasCharacterProfiles}). Wynik: false");
-                return false;
-            }
-            SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: Modelka '{modelVM.ModelName}' ma profile postaci.");
-
-            if (string.IsNullOrWhiteSpace(SourceFolderNamesInput))
-            {
-                SimpleFileLogger.Log($"CanExecuteMatchModelSpecific: SourceFolderNamesInput jest pusty ('{SourceFolderNamesInput}'). Wynik: false");
-                return false;
-            }
-            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: SourceFolderNamesInput OK.");
-            SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Wszystkie warunki spełnione. Wynik: true");
+            if (string.IsNullOrWhiteSpace(LibraryRootPath) || !Directory.Exists(LibraryRootPath)) return false;
+            if (!modelVM.HasCharacterProfiles) return false;
+            if (string.IsNullOrWhiteSpace(SourceFolderNamesInput)) return false;
             return true;
         }
         private bool CanExecuteRemoveModelTree(object? parameter) => parameter is ModelDisplayViewModel;
@@ -493,8 +478,14 @@ namespace CosplayManager.ViewModels
                 }
                 else if (SelectedProfile != null && !(allFlatProfiles?.Any(p => p.CategoryName == SelectedProfile.CategoryName) ?? false))
                 {
-                    SelectedProfile = null;
+                    SelectedProfile = null; // Jeśli poprzednio wybrany profil już nie istnieje
                 }
+                else if (SelectedProfile == null && HierarchicalProfilesList.Any() && HierarchicalProfilesList.First().CharacterProfiles.Any())
+                {
+                    // Opcjonalnie: automatycznie wybierz pierwszy profil, jeśli nic nie jest wybrane
+                    // SelectedProfile = HierarchicalProfilesList.First().CharacterProfiles.First();
+                }
+
 
                 OnPropertyChanged(nameof(AnyProfilesLoaded));
                 (SuggestImagesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
@@ -528,11 +519,12 @@ namespace CosplayManager.ViewModels
 
             try
             {
+                // Przekazujemy listę ImageFileEntry, a nie tylko ścieżki
                 await _profileService.GenerateProfileAsync(categoryName, ImageFiles.ToList());
                 StatusMessage = $"Profil '{categoryName}' wygenerowany/zaktualizowany.";
                 SimpleFileLogger.Log($"Profil '{categoryName}' wygenerowany/zaktualizowany.");
-                await ExecuteLoadProfilesAsync();
-                SelectedProfile = _profileService.GetProfile(categoryName);
+                await ExecuteLoadProfilesAsync(); // Przeładuj profile, aby odświeżyć drzewko
+                SelectedProfile = _profileService.GetProfile(categoryName); // Ponownie wybierz edytowany profil
             }
             catch (Exception ex)
             {
@@ -559,12 +551,11 @@ namespace CosplayManager.ViewModels
             {
                 profileToRemove = contextProfile;
             }
-            else if (SelectedProfile != null) // Fallback, jeśli parametr nie jest tym, czego oczekujemy
+            else if (SelectedProfile != null)
             {
                 profileToRemove = SelectedProfile;
                 SimpleFileLogger.LogWarning($"ExecuteRemoveProfileAsync: Parametr nie był typu CategoryProfile. Użyto SelectedProfile ('{SelectedProfile?.CategoryName}'). To może nie być oczekiwane dla menu kontekstowego.");
             }
-
 
             if (profileToRemove == null)
             {
@@ -593,7 +584,8 @@ namespace CosplayManager.ViewModels
                 }
             }
         }
-        private void ExecuteAddFilesToProfile(object? parameter = null)
+
+        private async void ExecuteAddFilesToProfile(object? parameter = null) // Zmieniono na async void
         {
             OpenFileDialog openFileDialog = new OpenFileDialog
             {
@@ -605,34 +597,39 @@ namespace CosplayManager.ViewModels
             if (openFileDialog.ShowDialog() == true)
             {
                 bool filesAdded = false;
+                List<Task> thumbnailTasks = new List<Task>();
                 foreach (string fileName in openFileDialog.FileNames)
                 {
                     if (!ImageFiles.Any(f => f.FilePath.Equals(fileName, StringComparison.OrdinalIgnoreCase)))
                     {
-                        ImageFiles.Add(new ImageFileEntry { FilePath = fileName, FileName = Path.GetFileName(fileName) });
+                        var entry = new ImageFileEntry { FilePath = fileName, FileName = Path.GetFileName(fileName) };
+                        ImageFiles.Add(entry); // Dodaj do ObservableCollection (powiadomi UI)
+                        thumbnailTasks.Add(entry.LoadThumbnailAsync()); // Rozpocznij ładowanie miniatury
                         filesAdded = true;
                     }
                 }
                 if (filesAdded)
                 {
                     (GenerateProfileCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+                    await Task.WhenAll(thumbnailTasks); // Opcjonalnie poczekaj na wszystkie miniatury (może spowolnić UI jeśli dużo plików)
+                                                        // lub pozwól im ładować się w tle - UI zaktualizuje się samo dzięki INotifyPropertyChanged w ImageFileEntry.Thumbnail
                 }
             }
         }
 
         private void ExecuteClearFilesFromProfile(object? parameter = null)
         {
-            ImageFiles.Clear();
+            ImageFiles.Clear(); // To usunie elementy, wywołując INotifyCollectionChanged
             (GenerateProfileCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         }
 
         private void ExecuteCreateNewProfileSetup(object? parameter = null)
         {
-            SelectedProfile = null;
-            CurrentProfileNameForEdit = "Nowa Kategoria";
+            SelectedProfile = null; // To wywoła UpdateEditFieldsFromSelectedProfile, które ustawi ImageFiles na pustą kolekcję
+            CurrentProfileNameForEdit = "Nowa Kategoria"; // Celowo nie ustawiam Model/Character Name Input, niech użytkownik wpisze
             ModelNameInput = string.Empty;
             CharacterNameInput = string.Empty;
-            ImageFiles.Clear();
+            // ImageFiles.Clear(); // Już obsługiwane przez SelectedProfile = null;
             StatusMessage = "Gotowy do utworzenia nowego profilu. Wprowadź dane i dodaj obrazy.";
         }
 
@@ -756,12 +753,18 @@ namespace CosplayManager.ViewModels
 
             if (imagePathsInCurrentDir.Any())
             {
+                // Zbieramy ImageFileEntry zamiast tylko ścieżek
                 List<ImageFileEntry> imageEntries = new List<ImageFileEntry>();
                 foreach (var path in imagePathsInCurrentDir)
                 {
-                    var entry = await _imageMetadataService.ExtractMetadataAsync(path);
-                    if (entry != null) imageEntries.Add(entry);
+                    // Tutaj ExtractMetadataAsync powinno zwracać ImageFileEntry
+                    var entry = await _imageMetadataService.ExtractMetadataAsync(path); // Zakładamy, że zwraca ImageFileEntry
+                    if (entry != null)
+                    {
+                        imageEntries.Add(entry);
+                    }
                 }
+
 
                 if (imageEntries.Any())
                 {
@@ -774,6 +777,7 @@ namespace CosplayManager.ViewModels
             {
                 if (_profileService.GetProfile(categoryName) != null)
                 {
+                    // Przekaż pustą listę ImageFileEntry, aby wyczyścić profil
                     await _profileService.GenerateProfileAsync(categoryName, new List<ImageFileEntry>());
                     SimpleFileLogger.Log($"ProcessDirectoryForProfileCreationAsync: Folder '{currentDirPath}' dla profilu '{categoryName}' jest pusty. Profil (jeśli istniał) został wyczyszczony.");
                 }
@@ -1524,20 +1528,20 @@ namespace CosplayManager.ViewModels
                 if (Directory.Exists(charPath))
                 {
                     SimpleFileLogger.Log($"RefreshProfilesAsync: Odświeżanie profilu '{profileName}' z folderu '{charPath}'.");
-                    var entries = await Task.Run(async () =>
+                    var entries = await Task.Run(async () => // Zmiana na Task.Run dla całości operacji na plikach
                         (await Task.WhenAll(Directory.GetFiles(charPath)
                             .Where(f => _fileScannerService.IsExtensionSupported(Path.GetExtension(f)))
-                            .Select(p => _imageMetadataService.ExtractMetadataAsync(p))))
+                            .Select(p => _imageMetadataService.ExtractMetadataAsync(p)))) // ExtractMetadataAsync jest już async
                             .Where(e => e != null).ToList()
                     );
 
-                    await _profileService.GenerateProfileAsync(profileName, entries!);
+                    await _profileService.GenerateProfileAsync(profileName, entries!); // Przekazujemy listę ImageFileEntry
                     changedAnythingSignificant = true;
                 }
                 else if (_profileService.GetProfile(profileName) != null)
                 {
                     SimpleFileLogger.LogWarning($"RefreshProfilesAsync: Folder dla profilu '{profileName}' ('{charPath}') nie istnieje, ale profil tak. Czyszczenie profilu.");
-                    await _profileService.GenerateProfileAsync(profileName, new List<ImageFileEntry>());
+                    await _profileService.GenerateProfileAsync(profileName, new List<ImageFileEntry>()); // Pusta lista ImageFileEntry
                     changedAnythingSignificant = true;
                 }
             }
@@ -1545,7 +1549,7 @@ namespace CosplayManager.ViewModels
             if (changedAnythingSignificant)
             {
                 SimpleFileLogger.Log("RefreshProfilesAsync: Wykryto znaczące zmiany w profilach, przeładowywanie całej listy profili.");
-                await ExecuteLoadProfilesAsync();
+                await ExecuteLoadProfilesAsync(); // To powinno zaktualizować UI
             }
             else
             {
@@ -1727,18 +1731,32 @@ namespace CosplayManager.ViewModels
             List<ImageFileEntry> imagesInProfile = new List<ImageFileEntry>();
             if (characterProfile.SourceImagePaths != null)
             {
+                List<Task> loadTasks = new List<Task>();
                 foreach (var path in characterProfile.SourceImagePaths)
                 {
                     if (File.Exists(path))
                     {
-                        var entry = await _imageMetadataService.ExtractMetadataAsync(path);
-                        if (entry != null)
+                        // Tworzymy ImageFileEntry i inicjujemy ładowanie miniatury
+                        var entry = new ImageFileEntry { FilePath = path, FileName = Path.GetFileName(path) };
+                        // Nie dodajemy jeszcze do imagesInProfile, poczekamy na metadane
+                        // Chociaż dla okna podziału, metadane mogą nie być kluczowe, tylko ścieżka
+                        // Jeśli jednak chcemy pełny obiekt ImageFileEntry:
+                        var metaEntry = await _imageMetadataService.ExtractMetadataAsync(path);
+                        if (metaEntry != null)
                         {
-                            imagesInProfile.Add(entry);
+                            imagesInProfile.Add(metaEntry); // Lub kopiuj właściwości do 'entry' i dodaj 'entry'
+                            loadTasks.Add(metaEntry.LoadThumbnailAsync()); // Ładuj miniaturę dla pełnego obiektu
+                        }
+                        else
+                        {
+                            imagesInProfile.Add(entry); // Dodaj z samą ścieżką, jeśli metadane zawiodą
+                            loadTasks.Add(entry.LoadThumbnailAsync());
                         }
                     }
                 }
+                await Task.WhenAll(loadTasks); // Poczekaj na załadowanie wszystkich miniatur
             }
+
 
             if (!imagesInProfile.Any())
             {
@@ -1772,8 +1790,8 @@ namespace CosplayManager.ViewModels
                 SimpleFileLogger.Log(StatusMessage);
                 MessageBox.Show("Funkcjonalność finalizacji podziału (przenoszenie plików, tworzenie nowych profili) nie jest jeszcze zaimplementowana.", "Do zrobienia", MessageBoxButton.OK, MessageBoxImage.Information);
 
-                characterProfile.HasSplitSuggestion = false;
-                await ExecuteLoadProfilesAsync();
+                characterProfile.HasSplitSuggestion = false; // Zresetuj flagę po próbie podziału
+                await ExecuteLoadProfilesAsync(); // Odśwież drzewko
             }
             else
             {
