@@ -2,7 +2,7 @@
 using CosplayManager.Models;
 using CosplayManager.Services;
 using CosplayManager.ViewModels.Base;
-using CosplayManager.Views; // Upewnij się, że ta przestrzeń nazw jest poprawna dla PreviewChangesWindow i SplitProfileWindow
+using CosplayManager.Views;
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
@@ -49,7 +49,7 @@ namespace CosplayManager.ViewModels
                 {
                     UpdateEditFieldsFromSelectedProfile();
                     OnPropertyChanged(nameof(IsProfileSelected));
-                    CommandManager.InvalidateRequerySuggested(); // Ogólne odświeżenie CanExecute
+                    CommandManager.InvalidateRequerySuggested();
                 }
                 if (_selectedProfile == null && oldSelectedProfileName != null &&
                     !_profileService.GetAllProfiles().Any(p => p.CategoryName == oldSelectedProfileName))
@@ -298,7 +298,7 @@ namespace CosplayManager.ViewModels
             }
             else if (!string.IsNullOrWhiteSpace(CharacterNameInput))
             {
-                CurrentProfileNameForEdit = CharacterNameInput;
+                CurrentProfileNameForEdit = CharacterNameInput; // To może być problematyczne, lepiej mieć pełną nazwę
             }
             else
             {
@@ -315,7 +315,7 @@ namespace CosplayManager.ViewModels
 
             if (string.IsNullOrWhiteSpace(character) && parts.Length > 1) character = "General";
             if (string.IsNullOrWhiteSpace(model)) model = "UnknownModel";
-            if (string.IsNullOrWhiteSpace(character)) character = "General";
+            if (string.IsNullOrWhiteSpace(character)) character = "General"; // Lub nazwa kategorii jeśli model jest pusty
             return (model, character);
         }
 
@@ -352,6 +352,8 @@ namespace CosplayManager.ViewModels
                     {
                         if (File.Exists(path))
                         {
+                            // Tworzymy pełny ImageFileEntry, jeśli go potrzebujemy (np. do miniaturek)
+                            // Dla uproszczenia, zostawmy jak było, chyba że ExtractMetadataAsync jest szybkie
                             newImageFiles.Add(new ImageFileEntry { FilePath = path, FileName = Path.GetFileName(path) });
                         }
                         else
@@ -361,6 +363,8 @@ namespace CosplayManager.ViewModels
                     }
                 }
                 ImageFiles = newImageFiles;
+                // Załaduj miniaturki dla wybranych plików, jeśli są wyświetlane
+                // _ = ExecuteEnsureThumbnailsLoadedAsync(ImageFiles); // Można odkomentować
             }
             else
             {
@@ -431,6 +435,7 @@ namespace CosplayManager.ViewModels
             }
             await _settingsService.SaveSettingsAsync(GetCurrentSettings());
             SimpleFileLogger.Log("ViewModel: OnAppClosingAsync - Ustawienia zapisane.");
+            // Zapis profili i cache embeddingów jest obsługiwany przez MainWindow.xaml.cs lub SaveAllProfilesCommand
         }
 
         private bool CanExecuteLoadProfiles(object? arg) => !IsBusy;
@@ -506,7 +511,32 @@ namespace CosplayManager.ViewModels
                 token.ThrowIfCancellationRequested();
                 string catName = CurrentProfileNameForEdit;
                 SimpleFileLogger.Log($"Generowanie profilu '{catName}' ({ImageFiles.Count} obr.). Token: {token.GetHashCode()}");
-                await _profileService.GenerateProfileAsync(catName, ImageFiles.ToList());
+
+                // ImageFiles to ObservableCollection<ImageFileEntry>, które powinny już mieć metadane
+                // Jeśli nie, trzeba je tutaj załadować dla każdego ImageFileEntry w ImageFiles
+                // Dla pewności, zaktualizujmy metadane, jeśli ich brakuje
+                List<ImageFileEntry> entriesToProcess = new List<ImageFileEntry>();
+                foreach (var file in ImageFiles)
+                {
+                    if (file.FileSize == 0 || file.FileLastModifiedUtc == DateTime.MinValue) // Prosty warunek, że metadane nie były ładowane
+                    {
+                        var updatedEntry = await _imageMetadataService.ExtractMetadataAsync(file.FilePath);
+                        if (updatedEntry != null)
+                        {
+                            entriesToProcess.Add(updatedEntry);
+                        }
+                        else
+                        {
+                            SimpleFileLogger.LogWarning($"ExecuteGenerateProfileAsync: Nie udało się załadować metadanych dla {file.FilePath}, pomijam.");
+                        }
+                    }
+                    else
+                    {
+                        entriesToProcess.Add(file);
+                    }
+                }
+
+                await _profileService.GenerateProfileAsync(catName, entriesToProcess); // Przekazujemy listę ImageFileEntry
                 token.ThrowIfCancellationRequested();
                 StatusMessage = $"Profil '{catName}' wygenerowany/zaktualizowany.";
                 await InternalExecuteLoadProfilesAsync(token);
@@ -553,6 +583,9 @@ namespace CosplayManager.ViewModels
                 {
                     if (!ImageFiles.Any(f => f.FilePath.Equals(fileName, StringComparison.OrdinalIgnoreCase)))
                     {
+                        // Przy dodawaniu od razu twórz pełny ImageFileEntry
+                        // Chociaż asynchroniczne ładowanie metadanych tutaj może być problematyczne bez Task.Run lub zmiany na async
+                        // Na razie zostawmy prostsze dodanie, GenerateProfileAsync sobie poradzi z załadowaniem metadanych jeśli trzeba
                         ImageFiles.Add(new ImageFileEntry { FilePath = fileName, FileName = Path.GetFileName(fileName) });
                         added = true;
                     }
@@ -618,17 +651,21 @@ namespace CosplayManager.ViewModels
             var currentParts = new List<string>(parentParts) { dirName };
             string categoryName = $"{modelName} - {string.Join(" - ", currentParts)}";
             SimpleFileLogger.Log($"InternalProcessDir: Folder '{currentPath}' dla profilu '{categoryName}'.");
-            List<string> imagePaths = new List<string>(); try { imagePaths = Directory.GetFiles(currentPath, "*.*", SearchOption.TopDirectoryOnly).Where(f => _fileScannerService.IsExtensionSupported(Path.GetExtension(f))).ToList(); } catch { }
+            List<string> imagePathsInDir = new List<string>(); try { imagePathsInDir = Directory.GetFiles(currentPath, "*.*", SearchOption.TopDirectoryOnly).Where(f => _fileScannerService.IsExtensionSupported(Path.GetExtension(f))).ToList(); } catch { }
             token.ThrowIfCancellationRequested();
 
-            if (imagePaths.Any())
+            if (imagePathsInDir.Any())
             {
                 var entries = new List<ImageFileEntry>();
-                foreach (var path in imagePaths) { token.ThrowIfCancellationRequested(); var entry = await _imageMetadataService.ExtractMetadataAsync(path); if (entry != null) entries.Add(entry); }
+                foreach (var path in imagePathsInDir) { token.ThrowIfCancellationRequested(); var entry = await _imageMetadataService.ExtractMetadataAsync(path); if (entry != null) entries.Add(entry); }
                 token.ThrowIfCancellationRequested();
                 if (entries.Any()) { await _profileService.GenerateProfileAsync(categoryName, entries); processedCount++; }
             }
-            else if (_profileService.GetProfile(categoryName) != null) await _profileService.GenerateProfileAsync(categoryName, new List<ImageFileEntry>());
+            // Jeśli folder jest pusty, ale profil dla niego istnieje (np. z poprzedniego skanowania), zaktualizuj go pustą listą plików, co go usunie/wyczyści.
+            else if (_profileService.GetProfile(categoryName) != null)
+            {
+                await _profileService.GenerateProfileAsync(categoryName, new List<ImageFileEntry>());
+            }
             token.ThrowIfCancellationRequested();
 
             try
@@ -645,26 +682,30 @@ namespace CosplayManager.ViewModels
             return processedCount;
         }
 
-        private async Task<Models.ProposedMove?> CreateProposedMoveAsync(ImageFileEntry source, CategoryProfile targetProfile, double similarityCentroid, string modelDir, float[] sourceEmb, CancellationToken token)
+        private async Task<Models.ProposedMove?> CreateProposedMoveAsync(ImageFileEntry sourceImageEntry, CategoryProfile targetProfile, double similarityCentroid, string modelDir, float[] sourceEmb, CancellationToken token) // sourceEmb to embedding dla sourceImageEntry
         {
             token.ThrowIfCancellationRequested();
             var (_, charFullName) = ParseCategoryName(targetProfile.CategoryName);
             string targetCharFolder = Path.Combine(modelDir, SanitizeFolderName(charFullName));
             Directory.CreateDirectory(targetCharFolder);
-            string proposedPath = Path.Combine(targetCharFolder, source.FileName);
+            string proposedPath = Path.Combine(targetCharFolder, sourceImageEntry.FileName);
             ImageFileEntry? bestMatchTarget = null; double maxSimExisting = 0.0;
-            List<string> filesInTarget; try { filesInTarget = Directory.EnumerateFiles(targetCharFolder).Where(f => _fileScannerService.IsExtensionSupported(Path.GetExtension(f))).ToList(); } catch { filesInTarget = new List<string>(); }
+            List<string> filesInTargetDir; try { filesInTargetDir = Directory.EnumerateFiles(targetCharFolder).Where(f => _fileScannerService.IsExtensionSupported(Path.GetExtension(f))).ToList(); } catch { filesInTargetDir = new List<string>(); }
 
-            foreach (string existingPath in filesInTarget)
+            foreach (string existingFilePathInTarget in filesInTargetDir)
             {
                 token.ThrowIfCancellationRequested();
-                if (string.Equals(Path.GetFullPath(existingPath), Path.GetFullPath(source.FilePath), StringComparison.OrdinalIgnoreCase)) continue;
-                var existingMeta = await _imageMetadataService.ExtractMetadataAsync(existingPath);
-                float[]? existingEmb = await _profileService.GetImageEmbeddingAsync(existingPath);
-                if (existingMeta != null && existingEmb != null)
+                if (string.Equals(Path.GetFullPath(existingFilePathInTarget), Path.GetFullPath(sourceImageEntry.FilePath), StringComparison.OrdinalIgnoreCase)) continue;
+
+                var existingTargetEntry = await _imageMetadataService.ExtractMetadataAsync(existingFilePathInTarget);
+                if (existingTargetEntry == null) continue;
+
+                // ZMIANA WYWOŁANIA GetImageEmbeddingAsync
+                float[]? existingTargetEmb = await _profileService.GetImageEmbeddingAsync(existingTargetEntry);
+                if (existingTargetEmb != null)
                 {
-                    double curSim = Utils.MathUtils.CalculateCosineSimilarity(sourceEmb, existingEmb);
-                    if (curSim > maxSimExisting) { maxSimExisting = curSim; bestMatchTarget = existingMeta; }
+                    double curSim = Utils.MathUtils.CalculateCosineSimilarity(sourceEmb, existingTargetEmb);
+                    if (curSim > maxSimExisting) { maxSimExisting = curSim; bestMatchTarget = existingTargetEntry; }
                 }
             }
             token.ThrowIfCancellationRequested();
@@ -673,18 +714,21 @@ namespace CosplayManager.ViewModels
             if (bestMatchTarget != null && maxSimExisting >= DUPLICATE_SIMILARITY_THRESHOLD)
             {
                 displayTarget = bestMatchTarget; displaySim = maxSimExisting; finalPath = bestMatchTarget.FilePath;
-                long sRes = (long)source.Width * source.Height, tRes = (long)bestMatchTarget.Width * bestMatchTarget.Height;
-                long sSize = new FileInfo(source.FilePath).Length, tSize = new FileInfo(bestMatchTarget.FilePath).Length;
+                long sRes = (long)sourceImageEntry.Width * sourceImageEntry.Height, tRes = (long)bestMatchTarget.Width * bestMatchTarget.Height;
+                long sSize = sourceImageEntry.FileSize, tSize = bestMatchTarget.FileSize; // Użycie FileSize z ImageFileEntry
                 action = (sRes > tRes || (sRes == tRes && sSize > tSize)) ? ProposedMoveActionType.OverwriteExisting : ProposedMoveActionType.KeepExistingDeleteSource;
             }
             else
             {
-                action = (File.Exists(proposedPath) && !string.Equals(Path.GetFullPath(proposedPath), Path.GetFullPath(source.FilePath), StringComparison.OrdinalIgnoreCase))
+                action = (File.Exists(proposedPath) && !string.Equals(Path.GetFullPath(proposedPath), Path.GetFullPath(sourceImageEntry.FilePath), StringComparison.OrdinalIgnoreCase))
                        ? ProposedMoveActionType.ConflictKeepBoth : ProposedMoveActionType.CopyNew;
-                if (action == ProposedMoveActionType.ConflictKeepBoth) displayTarget = await _imageMetadataService.ExtractMetadataAsync(proposedPath);
+                if (action == ProposedMoveActionType.ConflictKeepBoth)
+                {
+                    displayTarget = await _imageMetadataService.ExtractMetadataAsync(proposedPath); // Pobierz metadane dla istniejącego pliku w konflikcie
+                }
             }
-            if (action == ProposedMoveActionType.KeepExistingDeleteSource && string.Equals(Path.GetFullPath(source.FilePath), Path.GetFullPath(finalPath), StringComparison.OrdinalIgnoreCase)) return null;
-            return new Models.ProposedMove(source, displayTarget, finalPath, displaySim, targetProfile.CategoryName, action);
+            if (action == ProposedMoveActionType.KeepExistingDeleteSource && string.Equals(Path.GetFullPath(sourceImageEntry.FilePath), Path.GetFullPath(finalPath), StringComparison.OrdinalIgnoreCase)) return null;
+            return new Models.ProposedMove(sourceImageEntry, displayTarget, finalPath, displaySim, targetProfile.CategoryName, action);
         }
 
         private Task ExecuteMatchModelSpecificAsync(object? parameter) =>
@@ -712,7 +756,8 @@ namespace CosplayManager.ViewModels
                         {
                             token.ThrowIfCancellationRequested();
                             var srcEntry = await _imageMetadataService.ExtractMetadataAsync(imgP); if (srcEntry == null) continue;
-                            var srcEmb = await _profileService.GetImageEmbeddingAsync(srcEntry.FilePath); if (srcEmb == null) continue;
+                            // ZMIANA WYWOŁANIA GetImageEmbeddingAsync
+                            var srcEmb = await _profileService.GetImageEmbeddingAsync(srcEntry); if (srcEmb == null) continue;
                             withEmb++; token.ThrowIfCancellationRequested();
                             var sugTuple = _profileService.SuggestCategory(srcEmb, SuggestionSimilarityThreshold, modelVM.ModelName);
                             if (sugTuple != null)
@@ -758,7 +803,8 @@ namespace CosplayManager.ViewModels
                             {
                                 token.ThrowIfCancellationRequested();
                                 var srcEntry = await _imageMetadataService.ExtractMetadataAsync(imgP); if (srcEntry == null) continue;
-                                var srcEmb = await _profileService.GetImageEmbeddingAsync(srcEntry.FilePath); if (srcEmb == null) continue;
+                                // ZMIANA WYWOŁANIA GetImageEmbeddingAsync
+                                var srcEmb = await _profileService.GetImageEmbeddingAsync(srcEntry); if (srcEmb == null) continue;
                                 token.ThrowIfCancellationRequested();
                                 var sugTuple = _profileService.SuggestCategory(srcEmb, SuggestionSimilarityThreshold, modelVM.ModelName);
                                 if (sugTuple != null) { var move = await CreateProposedMoveAsync(srcEntry, sugTuple.Item1, sugTuple.Item2, modelPath, srcEmb, token); if (move != null) allMoves.Add(move); }
@@ -777,11 +823,7 @@ namespace CosplayManager.ViewModels
                     {
                         var previewVM = new PreviewChangesViewModel(filteredMoves, SuggestionSimilarityThreshold);
                         var previewWindow = new PreviewChangesWindow { DataContext = previewVM, Owner = Application.Current.MainWindow };
-                        // Poprawka CS0103: Użyj 'previewWindow' po rzutowaniu
-                        if (previewWindow is PreviewChangesWindow typedWin)
-                        {
-                            typedWin.SetCloseAction(previewVM);
-                        }
+                        if (previewWindow is PreviewChangesWindow typedWin) typedWin.SetCloseAction(previewVM);
                         dialogOutcome = previewWindow.ShowDialog();
                         if (dialogOutcome == true) approved = previewVM.GetApprovedMoves();
                     });
@@ -823,7 +865,8 @@ namespace CosplayManager.ViewModels
                                 {
                                     token.ThrowIfCancellationRequested();
                                     var srcE = await _imageMetadataService.ExtractMetadataAsync(imgP); if (srcE == null) continue;
-                                    var srcEmb = await _profileService.GetImageEmbeddingAsync(srcE.FilePath); if (srcEmb == null || charProfile.CentroidEmbedding == null) continue;
+                                    // ZMIANA WYWOŁANIA GetImageEmbeddingAsync
+                                    var srcEmb = await _profileService.GetImageEmbeddingAsync(srcE); if (srcEmb == null || charProfile.CentroidEmbedding == null) continue;
                                     token.ThrowIfCancellationRequested();
                                     double sim = Utils.MathUtils.CalculateCosineSimilarity(srcEmb, charProfile.CentroidEmbedding);
                                     if (sim >= SuggestionSimilarityThreshold)
@@ -848,11 +891,7 @@ namespace CosplayManager.ViewModels
                     {
                         var vm = new PreviewChangesViewModel(suggestions, SuggestionSimilarityThreshold);
                         var win = new PreviewChangesWindow { DataContext = vm, Owner = Application.Current.MainWindow };
-                        // Poprawka CS0103: Użyj 'win' po rzutowaniu
-                        if (win is PreviewChangesWindow typedWin)
-                        {
-                            typedWin.SetCloseAction(vm);
-                        }
+                        if (win is PreviewChangesWindow typedWin) typedWin.SetCloseAction(vm);
                         outcome = win.ShowDialog();
                         if (outcome == true) approved = vm.GetApprovedMoves();
                     });
@@ -895,7 +934,15 @@ namespace CosplayManager.ViewModels
                         case ProposedMoveActionType.CopyNew: if (File.Exists(target)) target = GenerateUniqueTargetPath(tDir, Path.GetFileName(src), "_new"); await Task.Run(() => File.Copy(src, target, false), token); ok = true; delSrc = true; break;
                         case ProposedMoveActionType.OverwriteExisting: await Task.Run(() => File.Copy(src, target, true), token); ok = true; delSrc = true; break;
                         case ProposedMoveActionType.KeepExistingDeleteSource: ok = true; delSrc = true; skipQ++; break;
-                        case ProposedMoveActionType.ConflictKeepBoth: long sS = new FileInfo(src).Length, tS = File.Exists(target) ? new FileInfo(target).Length : 0; if (sS > tS * 1.1) await Task.Run(() => File.Copy(src, target, true), token); else skipQ++; ok = true; delSrc = true; break;
+                        case ProposedMoveActionType.ConflictKeepBoth:
+                            long sS = move.SourceImage.FileSize; // Użycie FileSize z ImageFileEntry
+                            long tS = 0;
+                            if (File.Exists(target))
+                            {
+                                var targetConflictEntry = await _imageMetadataService.ExtractMetadataAsync(target);
+                                if (targetConflictEntry != null) tS = targetConflictEntry.FileSize;
+                            }
+                            if (sS > tS * 1.1) await Task.Run(() => File.Copy(src, target, true), token); else skipQ++; ok = true; delSrc = true; break;
                     }
                     token.ThrowIfCancellationRequested();
                     if (ok) { suc++; processedPaths.Add(src); if (delSrc) try { await Task.Run(() => File.Delete(src), token); } catch { delErr++; } changedNames.Add(move.TargetCategoryProfileName); }
@@ -960,7 +1007,22 @@ namespace CosplayManager.ViewModels
                 foreach (var cp in charProfs)
                 {
                     token.ThrowIfCancellationRequested(); const int minCon = 10, minSig = 20; if (cp.SourceImagePaths == null || cp.SourceImagePaths.Count < minCon) continue;
-                    var embs = new List<float[]>(); foreach (string pth in cp.SourceImagePaths) { token.ThrowIfCancellationRequested(); if (File.Exists(pth)) { var e = await _profileService.GetImageEmbeddingAsync(pth); if (e != null) embs.Add(e); } }
+                    var embs = new List<float[]>();
+                    foreach (string pth in cp.SourceImagePaths)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (File.Exists(pth))
+                        {
+                            // Potrzebujemy ImageFileEntry do przekazania do GetImageEmbeddingAsync
+                            var tempEntry = await _imageMetadataService.ExtractMetadataAsync(pth);
+                            if (tempEntry != null)
+                            {
+                                // ZMIANA WYWOŁANIA GetImageEmbeddingAsync
+                                var e = await _profileService.GetImageEmbeddingAsync(tempEntry);
+                                if (e != null) embs.Add(e);
+                            }
+                        }
+                    }
                     token.ThrowIfCancellationRequested(); if (embs.Count < minCon) continue; bool split = embs.Count >= minSig;
                     var uiCp = modelVM.CharacterProfiles.FirstOrDefault(p => p.CategoryName == cp.CategoryName); if (uiCp != null) uiCp.HasSplitSuggestion = split; if (split) marked++;
                 }
@@ -990,7 +1052,7 @@ namespace CosplayManager.ViewModels
                 token.ThrowIfCancellationRequested();
                 if (res == true) { StatusMessage = $"Podział '{charProfile.CategoryName}' zatwierdzony (TODO)."; var uiP = HierarchicalProfilesList.SelectMany(m => m.CharacterProfiles).FirstOrDefault(p => p.CategoryName == charProfile.CategoryName); if (uiP != null) uiP.HasSplitSuggestion = false; await InternalExecuteLoadProfilesAsync(token); }
                 else StatusMessage = $"Podział '{charProfile.CategoryName}' anulowany.";
-            }, "Otwieranie okna podziału profilu");  
+            }, "Otwieranie okna podziału profilu");
 
         private void ExecuteCancelCurrentOperation(object? parameter)
         {
