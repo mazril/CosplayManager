@@ -9,8 +9,9 @@ using System.Windows.Media.Imaging;
 
 namespace CosplayManager.ViewModels
 {
-    public class ProposedMoveViewModel : ObservableObject
+    public class ProposedMoveViewModel : ObservableObject // Zmieniono na public
     {
+        // ... (reszta kodu bez zmian)
         private ImageFileEntry _sourceImage;
         public ImageFileEntry SourceImage
         {
@@ -46,7 +47,6 @@ namespace CosplayManager.ViewModels
             set => SetProperty(ref _isApprovedForMove, value);
         }
 
-        // NOWE WŁAŚCIWOŚCI
         private ProposedMoveActionType _action;
         public ProposedMoveActionType Action
         {
@@ -60,7 +60,6 @@ namespace CosplayManager.ViewModels
             get => _targetCategoryProfileName;
             set => SetProperty(ref _targetCategoryProfileName, value);
         }
-        // KONIEC NOWYCH WŁAŚCIWOŚCI
 
         private BitmapImage? _sourceThumbnail;
         public BitmapImage? SourceThumbnail
@@ -83,36 +82,19 @@ namespace CosplayManager.ViewModels
             private set => SetProperty(ref _isLoadingThumbnails, value);
         }
 
-        // ZAKTUALIZOWANY KONSTRUKTOR
-        public ProposedMoveViewModel(Models.ProposedMove modelMove) // Zmieniono parametr na obiekt ProposedMove
+        public ProposedMoveViewModel(Models.ProposedMove modelMove)
         {
             _sourceImage = modelMove.SourceImage;
             _targetImage = modelMove.TargetImage;
             _proposedTargetPath = modelMove.ProposedTargetPath;
             _similarity = modelMove.Similarity;
-            _isApprovedForMove = true; // Domyślnie zaznaczone do wykonania
+            _isApprovedForMove = true;
 
-            // Ustawienie nowych właściwości
             _action = modelMove.Action;
             _targetCategoryProfileName = modelMove.TargetCategoryProfileName;
 
             _ = LoadThumbnailsAsync();
         }
-
-        // Stary konstruktor - można go usunąć lub zostawić jeśli jest gdzieś używany, ale główny przepływ powinien używać nowego
-        // public ProposedMoveViewModel(ImageFileEntry source, ImageFileEntry? target, string proposedPath, double similarity)
-        // {
-        //     _sourceImage = source;
-        //     _targetImage = target;
-        //     _proposedTargetPath = proposedPath;
-        //     _similarity = similarity;
-        //     _isApprovedForMove = true;
-        //     // Domyślne wartości dla nowych pól, jeśli ten konstruktor jest nadal potrzebny
-        //     _action = ProposedMoveActionType.CopyNew; // lub inna sensowna domyślna
-        //     _targetCategoryProfileName = string.Empty; 
-        //     _ = LoadThumbnailsAsync();
-        // }
-
 
         private async Task LoadThumbnailsAsync()
         {
