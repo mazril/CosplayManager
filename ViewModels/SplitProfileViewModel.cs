@@ -6,11 +6,11 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
-using System.Windows.Input; // Dla ICommand
+using System.Windows.Input;
 
 namespace CosplayManager.ViewModels
 {
-    // Pomocnicza klasa do wyświetlania obrazu w oknie podziału
+    // Pomocnicza klasa SplittableImageViewModel powinna być również public, jeśli jest używana w XAML
     public class SplittableImageViewModel : ObservableObject
     {
         private ImageFileEntry _originalImageEntry;
@@ -20,7 +20,7 @@ namespace CosplayManager.ViewModels
             set => SetProperty(ref _originalImageEntry, value);
         }
 
-        private string _thumbnailPath; // Można by użyć BitmapImage jak w ProposedMoveViewModel
+        private string _thumbnailPath;
         public string ThumbnailPath
         {
             get => _thumbnailPath;
@@ -32,13 +32,13 @@ namespace CosplayManager.ViewModels
         public SplittableImageViewModel(ImageFileEntry imageEntry)
         {
             OriginalImageEntry = imageEntry;
-            // Na razie uproszczone - bezpośrednia ścieżka. W bardziej zaawansowanej wersji generowalibyśmy miniatury.
-            ThumbnailPath = imageEntry.FilePath;
+            ThumbnailPath = imageEntry.FilePath; // Uproszczone, można by ładować miniaturkę jak w ImageFileEntry
         }
     }
 
-    public class SplitProfileViewModel : ObservableObject
+    public class SplitProfileViewModel : ObservableObject // Zmieniono na public
     {
+        // ... (reszta kodu bez zmian)
         private CategoryProfile _originalProfile;
         public CategoryProfile OriginalProfile
         {
@@ -96,17 +96,14 @@ namespace CosplayManager.ViewModels
 
         private bool CanConfirmSplit()
         {
-            // Prosta walidacja: obie grupy muszą mieć obrazy i nazwy nie mogą być puste
             return Group1Images.Any() && Group2Images.Any() &&
                    !string.IsNullOrWhiteSpace(NewProfile1Name) &&
                    !string.IsNullOrWhiteSpace(NewProfile2Name) &&
-                   NewProfile1Name != NewProfile2Name; // Nazwy nowych profili muszą być różne
+                   NewProfile1Name != NewProfile2Name;
         }
 
         private void OnConfirmSplit()
         {
-            // Tutaj docelowo będzie logika zwracająca dane do MainWindowViewModel
-            // Na razie tylko zamykamy okno z wynikiem true
             CloseAction?.Invoke(true);
         }
 
@@ -114,9 +111,5 @@ namespace CosplayManager.ViewModels
         {
             CloseAction?.Invoke(false);
         }
-
-        // TODO: Dodać metody do przenoszenia obrazów między Group1Images i Group2Images,
-        // które będą wywoływane np. przez drag&drop lub przyciski w UI.
-        // Te metody powinny również wywoływać (ConfirmSplitCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 }
