@@ -23,7 +23,6 @@
         <converters:CategoryProfileToCharacterNameConverter x:Key="CategoryProfileToCharacterNameConverter"/>
         <converters:StringCollectionToStringConverter x:Key="StringCollectionToStringConverter"/>
         <converters:CountToBoolConverter x:Key="CountToBoolConverter"/>
-        <converters:TypeCheckConverter x:Key="TypeCheckConverter" />
         <converters:SplitSuggestionToColorConverter x:Key="SplitSuggestionToColorConverter"/>
     </Window.Resources>
 
@@ -118,12 +117,6 @@
                                                     <Run Text="Szukaj dopasowań dla: "/>
                                                     <Run Text="{Binding Path=PlacementTarget.DataContext.ModelName, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue='Modelki'}" FontWeight="Bold"/>
                                                 </TextBlock>
-                                            </MenuItem.Header>
-                                        </MenuItem>
-                                        <MenuItem Command="{Binding AnalyzeModelForSplittingCommand}"
-                                                  CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
-                                            <MenuItem.Header>
-                                                <TextBlock Text="Analizuj Modelkę pod kątem podziału profili"/>
                                             </MenuItem.Header>
                                         </MenuItem>
                                         <MenuItem Command="{Binding RemoveModelTreeCommand}"
