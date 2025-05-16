@@ -10,7 +10,7 @@ using System.Runtime.CompilerServices;
 
 namespace CosplayManager.Models
 {
-    public class CategoryProfile : INotifyPropertyChanged
+    public class CategoryProfile : INotifyPropertyChanged // Zmieniono na public
     {
         private string _categoryName = string.Empty;
         public string CategoryName
