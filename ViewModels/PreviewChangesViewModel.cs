@@ -6,12 +6,13 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows.Input;
-using CosplayManager.Models; // Potrzebne dla ProposedMove
+using CosplayManager.Models;
 
 namespace CosplayManager.ViewModels
 {
-    public class PreviewChangesViewModel : ObservableObject
+    public class PreviewChangesViewModel : ObservableObject // Zmieniono na public
     {
+        // ... (reszta kodu bez zmian, zakładając, że ProposedMoveViewModel jest public)
         private ObservableCollection<ProposedMoveViewModel> _proposedMovesList;
         public ObservableCollection<ProposedMoveViewModel> ProposedMovesList
         {
@@ -58,10 +59,9 @@ namespace CosplayManager.ViewModels
             {
                 foreach (var move in moves)
                 {
-                    // Używamy nowego konstruktora ProposedMoveViewModel, przekazując cały obiekt 'move'
                     var vm = new ProposedMoveViewModel(move)
                     {
-                        IsApprovedForMove = true // Domyślnie zatwierdzone
+                        IsApprovedForMove = true
                     };
                     ProposedMovesList.Add(vm);
                 }
@@ -82,7 +82,6 @@ namespace CosplayManager.ViewModels
             return ProposedMovesList.Any(p => p.IsApprovedForMove);
         }
 
-        // ZAKTUALIZOWANA METODA GetApprovedMoves
         public List<Models.ProposedMove> GetApprovedMoves()
         {
             var approvedRawMoves = new List<Models.ProposedMove>();
@@ -90,15 +89,14 @@ namespace CosplayManager.ViewModels
             {
                 foreach (var vm in ProposedMovesList.Where(p => p.IsApprovedForMove))
                 {
-                    // Tworzymy nowy obiekt Models.ProposedMove, tym razem poprawnie kopiując WSZYSTKIE potrzebne pola
                     approvedRawMoves.Add(new Models.ProposedMove
                     {
                         SourceImage = vm.SourceImage,
                         TargetImage = vm.TargetImage,
                         ProposedTargetPath = vm.ProposedTargetPath,
                         Similarity = vm.Similarity,
-                        Action = vm.Action, // Kopiujemy Action
-                        TargetCategoryProfileName = vm.TargetCategoryProfileName // Kopiujemy TargetCategoryProfileName
+                        Action = vm.Action,
+                        TargetCategoryProfileName = vm.TargetCategoryProfileName
                     });
                 }
             }

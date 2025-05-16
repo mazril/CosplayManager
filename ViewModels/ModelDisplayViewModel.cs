@@ -6,7 +6,7 @@ using System.Linq;
 
 namespace CosplayManager.ViewModels
 {
-    public class ModelDisplayViewModel : ObservableObject
+    public class ModelDisplayViewModel : ObservableObject // Zmieniono na public
     {
         private string _modelName = string.Empty;
         public string ModelName
@@ -45,12 +45,11 @@ namespace CosplayManager.ViewModels
             {
                 if (SetProperty(ref _pendingSuggestionsCount, value))
                 {
-                    OnPropertyChanged(nameof(HasPendingSuggestions)); // Powiadom o zmianie HasPendingSuggestions
+                    OnPropertyChanged(nameof(HasPendingSuggestions));
                 }
             }
         }
 
-        // Pomocnicza właściwość dla XAML
         public bool HasPendingSuggestions => PendingSuggestionsCount > 0;
 
         public ModelDisplayViewModel(string modelName)
