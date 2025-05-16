@@ -206,8 +206,7 @@
                           VirtualizingPanel.VirtualizationMode="Recycling"
                           ScrollViewer.CanContentScroll="True">
                     <TreeView.ItemContainerStyle>
-                        <Style TargetType="{x:Type TreeViewItem}" BasedOn="{StaticResource TreeViewItemStyle}">
-                        </Style>
+                        <Style TargetType="{x:Type TreeViewItem}" BasedOn="{StaticResource TreeViewItemStyle}"/>
                     </TreeView.ItemContainerStyle>
                     <TreeView.ItemTemplate>
                         <HierarchicalDataTemplate ItemsSource="{Binding CharacterProfiles}">
@@ -216,8 +215,7 @@
                                 <TextBlock Text="{Binding ModelName}" FontWeight="Bold"/>
                                 <TextBlock Text=" (" Foreground="Gray" Margin="2,0,0,0"/>
                                 <TextBlock Text="{Binding CharacterProfiles.Count}" Foreground="Gray"/>
-                                <TextBlock Text=" profili" Foreground="Gray"/>
-                                <TextBlock Text=")" Foreground="Gray"/>
+                                <TextBlock Text=" profili)" Foreground="Gray"/>
                                 <TextBlock Text=" - Sugestie: " Foreground="DarkGoldenrod" Margin="5,0,0,0"
                                            Visibility="{Binding HasPendingSuggestions, Converter={StaticResource BooleanToVisibilityConverter}}"/>
                                 <TextBlock Text="{Binding PendingSuggestionsCount}" Foreground="DarkGoldenrod" FontWeight="Bold"
@@ -227,11 +225,11 @@
                     </TreeView.ItemTemplate>
 
                     <TreeView.Resources>
-                        <HierarchicalDataTemplate DataType="{x:Type models:CategoryProfile}" ItemsSource="{Binding SubItems}">
+                        <HierarchicalDataTemplate DataType="{x:Type models:CategoryProfile}">
                             <StackPanel Orientation="Horizontal">
                                 <iconPacks:PackIconMaterial Kind="AccountOutline" VerticalAlignment="Center" Margin="0,0,5,0"
                                                             Foreground="{Binding HasSplitSuggestion, Converter={StaticResource SplitSuggestionToColorConverter}, FallbackValue='Black'}"/>
-                                <TextBlock Text="{Binding Converter={StaticResource CategoryProfileToCharacterNameConverter}}"/>
+                                <TextBlock Text="{Binding CategoryName}" ToolTip="Pełna nazwa kategorii (test)"/>
                                 <TextBlock Text=" [" Foreground="DimGray" Margin="2,0,0,0"/>
                                 <TextBlock Text="{Binding ImageCountInProfile}" Foreground="DimGray"/>
                                 <TextBlock Text=" obr.]" Foreground="DimGray"/>
@@ -292,29 +290,33 @@
                 </GroupBox>
 
                 <GroupBox Grid.Row="1" Header="Obrazy w wybranym/edytowanym profilu" Margin="0,5,0,0">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <ListView ItemsSource="{Binding ImageFiles}" SelectionMode="Extended">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <ListView ItemsSource="{Binding ImageFiles}" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                             <ListView.ItemsPanel>
                                 <ItemsPanelTemplate>
                                     <WrapPanel Orientation="Horizontal" ItemWidth="150" ItemHeight="170"/>
                                 </ItemsPanelTemplate>
                             </ListView.ItemsPanel>
                             <ListView.ItemTemplate>
-                                <DataTemplate>
+                                <DataTemplate DataType="{x:Type models:ImageFileEntry}">
                                     <Border BorderBrush="LightGray" BorderThickness="1" Margin="5" Padding="5">
                                         <StackPanel Width="140">
-                                            <Image Source="{Binding FilePath}" Width="120" Height="120" Stretch="Uniform" Margin="0,0,0,5">
-                                                <Image.ToolTip>
-                                                    <ToolTip>
-                                                        <StackPanel>
-                                                            <TextBlock Text="{Binding FileName}" FontWeight="Bold"/>
-                                                            <TextBlock Text="{Binding FilePath}"/>
-                                                            <TextBlock Text="{Binding Width, StringFormat='Szerokość: {0}px'}"/>
-                                                            <TextBlock Text="{Binding Height, StringFormat='Wysokość: {0}px'}"/>
-                                                        </StackPanel>
-                                                    </ToolTip>
-                                                </Image.ToolTip>
-                                            </Image>
+                                            <Grid Width="120" Height="120" Margin="0,0,0,5">
+                                                <Image Source="{Binding Thumbnail}" Stretch="Uniform">
+                                                    <Image.ToolTip>
+                                                        <ToolTip>
+                                                            <StackPanel>
+                                                                <TextBlock Text="{Binding FileName}" FontWeight="Bold"/>
+                                                                <TextBlock Text="{Binding FilePath}"/>
+                                                                <TextBlock Text="{Binding Width, StringFormat='Szerokość: {0}px'}"/>
+                                                                <TextBlock Text="{Binding Height, StringFormat='Wysokość: {0}px'}"/>
+                                                            </StackPanel>
+                                                        </ToolTip>
+                                                    </Image.ToolTip>
+                                                </Image>
+                                                <ProgressBar IsIndeterminate="True" Width="50" Height="10" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                                             Visibility="{Binding IsLoadingThumbnail, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                            </Grid>
                                             <TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis" HorizontalAlignment="Center" FontSize="10" ToolTip="{Binding FileName}"/>
                                         </StackPanel>
                                     </Border>
