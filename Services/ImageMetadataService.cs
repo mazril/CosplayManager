@@ -1,12 +1,6 @@
-// Services/ImageMetadataService.cs
+// Plik: Services/ImageMetadataService.cs
 using CosplayManager.Models;
-using SixLabors.ImageSharp; // Dla Image.IdentifyAsync
-// Usunięto using MetadataExtractor, jeśli nie jest używany w tej uproszczonej wersji.
-// Jeśli chcesz dodać szczegółowe metadane, odkomentuj i dodaj odpowiednie usingi.
-// using MetadataExtractor; 
-// using MetadataExtractor.Formats.Exif;
-// using MetadataExtractor.Formats.Jpeg;
-// using MetadataExtractor.Formats.Png;
+using SixLabors.ImageSharp;
 using System.IO;
 using System.Threading.Tasks;
 
@@ -18,32 +12,30 @@ namespace CosplayManager.Services
         {
             try
             {
-                // Szybkie pobranie wymiarów za pomocą ImageSharp [6, 7]
+                // Szybkie pobranie wymiarów za pomocą ImageSharp
                 IImageInfo? imageInfo = await Image.IdentifyAsync(filePath);
-                if (imageInfo == null) return null;
+                if (imageInfo == null)
+                {
+                    SimpleFileLogger.LogWarning($"ImageMetadataService: Nie udało się zidentyfikować obrazu (Image.IdentifyAsync zwrócił null): {filePath}");
+                    return null;
+                }
+
+                FileInfo fileInfo = new FileInfo(filePath); // Pobierz FileInfo raz
 
                 var entry = new ImageFileEntry
                 {
                     FilePath = filePath,
                     FileName = Path.GetFileName(filePath),
                     Width = imageInfo.Width,
-                    Height = imageInfo.Height
-                    // Możesz tutaj dodać odczyt innych metadanych z imageInfo.Metadata, jeśli są potrzebne
+                    Height = imageInfo.Height,
+                    FileLastModifiedUtc = fileInfo.LastWriteTimeUtc, // Ustawienie nowej właściwości
+                    FileSize = fileInfo.Length                     // Ustawienie nowej właściwości
                 };
-
-                // Jeśli potrzebujesz bardziej szczegółowych metadanych z MetadataExtractor:
-                // IEnumerable<MetadataExtractor.Directory> directories = ImageMetadataReader.ReadMetadata(filePath); [8, 9]
-                // var jpegDirectory = directories.OfType<JpegDirectory>().FirstOrDefault();
-                // if (jpegDirectory!= null && jpegDirectory.TryGetInt32(JpegDirectory.TagImageWidth, out int jpegWidth)) { /*... */ } [10]
-                // var exifSubIfdDirectory = directories.OfType<ExifSubIfdDirectory>().FirstOrDefault();
-                // if (exifSubIfdDirectory!= null && exifSubIfdDirectory.TryGetInt32(ExifDirectoryBase.TagExifImageWidth, out int exifWidth)) { /*... */ } [11, 10]
-
-
                 return entry;
             }
             catch (System.Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Błąd odczytu metadanych dla {filePath}: {ex.Message}");
+                SimpleFileLogger.LogError($"Błąd odczytu metadanych dla {filePath}", ex);
                 return null;
             }
         }
