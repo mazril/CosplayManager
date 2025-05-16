@@ -990,7 +990,7 @@ namespace CosplayManager.ViewModels
                 token.ThrowIfCancellationRequested();
                 if (res == true) { StatusMessage = $"Podział '{charProfile.CategoryName}' zatwierdzony (TODO)."; var uiP = HierarchicalProfilesList.SelectMany(m => m.CharacterProfiles).FirstOrDefault(p => p.CategoryName == charProfile.CategoryName); if (uiP != null) uiP.HasSplitSuggestion = false; await InternalExecuteLoadProfilesAsync(token); }
                 else StatusMessage = $"Podział '{charProfile.CategoryName}' anulowany.";
-            }, "Otwieranie okna podziału profilu"); 
+            }, "Otwieranie okna podziału profilu");  
 
         private void ExecuteCancelCurrentOperation(object? parameter)
         {
