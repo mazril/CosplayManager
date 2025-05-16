@@ -400,7 +400,6 @@ namespace CosplayManager.ViewModels
                    profile.CentroidEmbedding != null;
         }
 
-        // ZMODYFIKOWANE CanExecuteMatchModelSpecific z logowaniem
         private bool CanExecuteMatchModelSpecific(object? parameter)
         {
             SimpleFileLogger.Log("CanExecuteMatchModelSpecific: Sprawdzanie warunków...");
@@ -873,7 +872,6 @@ namespace CosplayManager.ViewModels
             return new Models.ProposedMove(sourceImageEntry, finalTargetImageForDisplay, finalProposedTargetPath, displaySimilarity, suggestedProfileData.CategoryName, actionType);
         }
 
-        // ZMODYFIKOWANA METODA ExecuteMatchModelSpecificAsync z rozbudowanym logowaniem
         private async Task ExecuteMatchModelSpecificAsync(object? parameter)
         {
             SimpleFileLogger.Log("ExecuteMatchModelSpecificAsync: Rozpoczęto wykonanie.");
@@ -885,22 +883,19 @@ namespace CosplayManager.ViewModels
             }
             SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Przetwarzanie dla modelki: {modelVM.ModelName}");
 
-            if (!CanExecuteMatchModelSpecific(modelVM)) // Sprawdź warunki wykonania
+            if (!await Application.Current.Dispatcher.InvokeAsync(() => CanExecuteMatchModelSpecific(modelVM)))
             {
-                SimpleFileLogger.LogWarning($"ExecuteMatchModelSpecificAsync: Warunek CanExecuteMatchModelSpecific zwrócił false dla modelki {modelVM.ModelName}. Szczegóły w poprzednich logach CanExecute.");
+                SimpleFileLogger.LogWarning($"ExecuteMatchModelSpecificAsync: Warunek CanExecuteMatchModelSpecific zwrócił false dla modelki {modelVM.ModelName} (sprawdzone w wątku UI).");
                 StatusMessage = $"Nie można uruchomić dopasowania dla {modelVM.ModelName} - sprawdź konfigurację.";
-                // Można też pokazać MessageBox, jeśli to bardziej przyjazne użytkownikowi
                 MessageBox.Show($"Nie można uruchomić dopasowania dla '{modelVM.ModelName}'.\nSprawdź, czy:\n- Ścieżka biblioteki jest poprawna.\n- Modelka ma zdefiniowane profile postaci.\n- Zdefiniowano nazwy folderów źródłowych (Mix).", "Nie można wykonać", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-
 
             var configuredMixedFolderNames = new HashSet<string>(
                 SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
                                      .Select(name => name.Trim()),
                 StringComparer.OrdinalIgnoreCase);
 
-            // Sprawdzenie `configuredMixedFolderNames.Any()` jest już w CanExecute, ale dla pewności
             if (!configuredMixedFolderNames.Any())
             {
                 SimpleFileLogger.LogWarning("ExecuteMatchModelSpecificAsync: Brak zdefiniowanych folderów źródłowych (Mix).");
@@ -914,14 +909,7 @@ namespace CosplayManager.ViewModels
             var currentModelProposedMoves = new List<Models.ProposedMove>();
             string modelDirectoryPath = Path.Combine(LibraryRootPath, modelVM.ModelName);
 
-            if (!Directory.Exists(modelDirectoryPath)) // To jest już w CanExecute, ale dla bezpieczeństwa
-            {
-                SimpleFileLogger.LogError($"ExecuteMatchModelSpecificAsync: Folder modelki '{modelVM.ModelName}' ('{modelDirectoryPath}') nie istnieje.", null);
-                MessageBox.Show($"Folder modelki '{modelVM.ModelName}' ('{modelDirectoryPath}') nie istnieje.", "Błąd ścieżki", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
             SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Ścieżka do folderu modelki: {modelDirectoryPath}");
-
 
             modelVM.PendingSuggestionsCount = 0;
             foreach (var charProfile in modelVM.CharacterProfiles) charProfile.PendingSuggestionsCount = 0;
@@ -986,7 +974,6 @@ namespace CosplayManager.ViewModels
                     }
                 }
                 SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Zakończono skanowanie folderów Mix. Obrazów znalezionych: {imagesFoundInMixFolders}, z embeddingami: {imagesWithEmbeddings}, wygenerowanych propozycji: {suggestionsMade}.");
-
 
                 _lastModelSpecificSuggestions = new List<Models.ProposedMove>(currentModelProposedMoves);
                 _lastScannedModelNameForSuggestions = modelVM.ModelName;
