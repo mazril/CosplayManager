@@ -11,7 +11,7 @@ using System;
 
 namespace CosplayManager.Models
 {
-    public class ImageFileEntry : INotifyPropertyChanged // Zmieniono na public
+    public class ImageFileEntry : INotifyPropertyChanged
     {
         private string _filePath = string.Empty;
         public string FilePath
@@ -82,6 +82,22 @@ namespace CosplayManager.Models
             }
         }
 
+        // NOWE WŁAŚCIWOŚCI
+        private DateTime _fileLastModifiedUtc;
+        public DateTime FileLastModifiedUtc
+        {
+            get => _fileLastModifiedUtc;
+            set => SetProperty(ref _fileLastModifiedUtc, value);
+        }
+
+        private long _fileSize;
+        public long FileSize
+        {
+            get => _fileSize;
+            set => SetProperty(ref _fileSize, value);
+        }
+        // KONIEC NOWYCH WŁAŚCIWOŚCI
+
         [JsonIgnore]
         public int FeatureVectorLength => _featureVector?.Length ?? 0;
 
@@ -101,7 +117,7 @@ namespace CosplayManager.Models
 
         private bool _isLoadingThumbnail;
         [JsonIgnore]
-        public bool IsLoadingThumbnail // Pozostawiam public, aby ProgressBar w XAML mógł się bindować
+        public bool IsLoadingThumbnail
         {
             get => _isLoadingThumbnail;
             private set => SetProperty(ref _isLoadingThumbnail, value);
@@ -118,7 +134,7 @@ namespace CosplayManager.Models
                 return;
             }
 
-            if (IsLoadingThumbnail) return; // Nie ładuj, jeśli już jest w trakcie
+            if (IsLoadingThumbnail) return;
 
             IsLoadingThumbnail = true;
             try
@@ -139,7 +155,7 @@ namespace CosplayManager.Models
                         bmp.CacheOption = BitmapCacheOption.OnLoad;
                         bmp.DecodePixelWidth = decodePixelWidth;
                         bmp.EndInit();
-                        bmp.Freeze(); // Ważne dla użycia w innym wątku (UI)
+                        bmp.Freeze();
                         return bmp;
                     }
                     catch (Exception ex)
@@ -153,7 +169,7 @@ namespace CosplayManager.Models
             catch (Exception ex)
             {
                 SimpleFileLogger.LogError($"Zewnętrzny błąd ładowania miniatury dla {FilePath}", ex);
-                Thumbnail = null; // W razie błędu, upewnij się, że thumbnail jest null
+                Thumbnail = null;
             }
             finally
             {
