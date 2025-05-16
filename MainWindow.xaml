@@ -1,21 +1,21 @@
 <mah:MetroWindow x:Class="CosplayManager.MainWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:mah="http://metro.mahapps.com/winfx/xaml/controls"
-        xmlns:iconPacks="http://metro.mahapps.com/winfx/xaml/iconpacks"
-        xmlns:local="clr-namespace:CosplayManager"
-        xmlns:viewmodels="clr-namespace:CosplayManager.ViewModels"
-        xmlns:models="clr-namespace:CosplayManager.Models"
-        xmlns:converters="clr-namespace:CosplayManager.Converters"
-        xmlns:b="http://schemas.microsoft.com/xaml/behaviors" 
-        mc:Ignorable="d"
-        Title="Cosplay Manager Deluxe" Height="768" Width="1366"
-        GlowBrush="{DynamicResource MahApps.Brushes.Accent}"
-        BorderThickness="1" 
-        WindowStartupLocation="CenterScreen"
-        d:DataContext="{d:DesignInstance Type=viewmodels:MainWindowViewModel, IsDesignTimeCreatable=False}">
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+                 xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                 xmlns:mah="http://metro.mahapps.com/winfx/xaml/controls"
+                 xmlns:iconPacks="http://metro.mahapps.com/winfx/xaml/iconpacks"
+                 xmlns:local="clr-namespace:CosplayManager"
+                 xmlns:viewmodels="clr-namespace:CosplayManager.ViewModels"
+                 xmlns:models="clr-namespace:CosplayManager.Models"
+                 xmlns:converters="clr-namespace:CosplayManager.Converters"
+                 xmlns:b="http://schemas.microsoft.com/xaml/behaviors" 
+                 mc:Ignorable="d"
+                 Title="Cosplay Manager Deluxe" Height="768" Width="1366"
+                 GlowBrush="{DynamicResource MahApps.Brushes.Accent}"
+                 BorderThickness="1" 
+                 WindowStartupLocation="CenterScreen"
+                 d:DataContext="{d:DesignInstance Type=viewmodels:MainWindowViewModel, IsDesignTimeCreatable=False}">
 
     <Window.Resources>
         <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
@@ -128,6 +128,12 @@
                                                 <TextBlock Text="Analizuj modelkę pod kątem podziału profili"/>
                                             </MenuItem.Header>
                                         </MenuItem>
+
+                                        <MenuItem Header="Usuń duplikaty wewnątrz profili postaci"
+                                                  Command="{Binding RemoveDuplicatesInModelCommand}"
+                                                  CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+
+                                        <Separator/>
                                         <MenuItem Command="{Binding RemoveModelTreeCommand}"
                                                   CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
                                             <MenuItem.Header>
