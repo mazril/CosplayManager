@@ -184,6 +184,7 @@ namespace CosplayManager.ViewModels
         public ICommand OpenSplitProfileDialogCommand { get; }
         public ICommand CancelCurrentOperationCommand { get; }
         public ICommand EnsureThumbnailsLoadedCommand { get; }
+        public ICommand RemoveDuplicatesInModelCommand { get; }
 
 
         public MainWindowViewModel(
@@ -216,6 +217,8 @@ namespace CosplayManager.ViewModels
             RemoveModelTreeCommand = new AsyncRelayCommand(ExecuteRemoveModelTreeAsync, CanExecuteRemoveModelTree);
             AnalyzeModelForSplittingCommand = new AsyncRelayCommand(ExecuteAnalyzeModelForSplittingAsync, CanExecuteAnalyzeModelForSplitting);
             OpenSplitProfileDialogCommand = new AsyncRelayCommand(ExecuteOpenSplitProfileDialogAsync, CanExecuteOpenSplitProfileDialog);
+            RemoveDuplicatesInModelCommand = new AsyncRelayCommand(ExecuteRemoveDuplicatesInModelAsync, CanExecuteRemoveDuplicatesInModel);
+
 
             CancelCurrentOperationCommand = new RelayCommand(ExecuteCancelCurrentOperation, CanExecuteCancelCurrentOperation);
             EnsureThumbnailsLoadedCommand = new AsyncRelayCommand(ExecuteEnsureThumbnailsLoadedAsync, CanExecuteEnsureThumbnailsLoaded);
@@ -460,6 +463,7 @@ namespace CosplayManager.ViewModels
         private bool CanExecuteOpenSplitProfileDialog(object? parameter) => !IsBusy && parameter is CategoryProfile characterProfile && characterProfile.HasSplitSuggestion;
         private bool CanExecuteCancelCurrentOperation(object? parameter) => IsBusy && _activeLongOperationCts != null && !_activeLongOperationCts.IsCancellationRequested;
         private bool CanExecuteEnsureThumbnailsLoaded(object? parameter) => !IsBusy && parameter is IEnumerable<ImageFileEntry> images && images.Any();
+        private bool CanExecuteRemoveDuplicatesInModel(object? parameter) => !IsBusy && parameter is ModelDisplayViewModel modelVM && modelVM.HasCharacterProfiles;
 
 
         private Task ExecuteLoadProfilesAsync(object? parameter = null) =>
@@ -633,7 +637,6 @@ namespace CosplayManager.ViewModels
             SelectedProfile = null;
             ModelNameInput = string.Empty;
             CharacterNameInput = string.Empty;
-            // CurrentProfileNameForEdit zaktualizuje się automatycznie na podstawie ModelNameInput i CharacterNameInput
             ImageFiles.Clear();
             StatusMessage = "Gotowy do utworzenia nowego profilu. Wprowadź nazwę modelki i postaci.";
         }
@@ -775,7 +778,6 @@ namespace CosplayManager.ViewModels
             return processedCountThisLevel;
         }
 
-        // Metoda pomocnicza do porównywania jakości obrazów
         private bool IsImageBetter(ImageFileEntry entry1, ImageFileEntry entry2)
         {
             if (entry1 == null || entry2 == null) return false;
@@ -786,12 +788,10 @@ namespace CosplayManager.ViewModels
             if (resolution1 > resolution2) return true;
             if (resolution1 < resolution2) return false;
 
-            // Rozdzielczości są równe, porównaj rozmiar pliku
-            // Zakładamy, że większy rozmiar pliku (przy tej samej rozdzielczości) oznacza lepszą jakość (mniejsza kompresja)
             return entry1.FileSize > entry2.FileSize;
         }
 
-        private async Task HandleFileMovedOrDeletedUpdateProfilesAsync(string oldPath, string? newPathIfMoved, string? targetCategoryNameIfMoved, CancellationToken token)
+        private async Task HandleFileMovedOrDeletedUpdateProfilesAsync(string? oldPath, string? newPathIfMoved, string? targetCategoryNameIfMoved, CancellationToken token)
         {
             SimpleFileLogger.Log($"[ProfileUpdate] Rozpoczęto aktualizację profili po operacji na pliku: OldPath='{oldPath}', NewPath='{newPathIfMoved}', TargetCat='{targetCategoryNameIfMoved}'");
             var affectedProfileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -803,7 +803,7 @@ namespace CosplayManager.ViewModels
             {
                 token.ThrowIfCancellationRequested();
                 bool currentProfileModifiedByThisFileOperation = false;
-                if (profile.SourceImagePaths != null && profile.SourceImagePaths.Any(p => p.Equals(oldPath, StringComparison.OrdinalIgnoreCase))) // POPRAWKA TUTAJ
+                if (!string.IsNullOrWhiteSpace(oldPath) && profile.SourceImagePaths != null && profile.SourceImagePaths.Any(p => p.Equals(oldPath, StringComparison.OrdinalIgnoreCase)))
                 {
                     int removedCount = profile.SourceImagePaths.RemoveAll(p => p.Equals(oldPath, StringComparison.OrdinalIgnoreCase));
                     if (removedCount > 0)
@@ -819,7 +819,7 @@ namespace CosplayManager.ViewModels
                 {
                     if (profile.SourceImagePaths == null) profile.SourceImagePaths = new List<string>();
 
-                    if (!profile.SourceImagePaths.Any(p => p.Equals(newPathIfMoved, StringComparison.OrdinalIgnoreCase))) // POPRAWKA TUTAJ
+                    if (!profile.SourceImagePaths.Any(p => p.Equals(newPathIfMoved, StringComparison.OrdinalIgnoreCase)))
                     {
                         profile.SourceImagePaths.Add(newPathIfMoved);
                         SimpleFileLogger.Log($"[ProfileUpdate] Dodano '{newPathIfMoved}' do SourceImagePaths profilu '{profile.CategoryName}'.");
@@ -923,7 +923,7 @@ namespace CosplayManager.ViewModels
 
                 if (similarityBetweenSourceAndExisting >= DUPLICATE_SIMILARITY_THRESHOLD)
                 {
-                    bool sourceIsCurrentlyBetter = IsImageBetter(sourceImageEntry, existingTargetEntry); // POPRAWIONE WYWOŁANIE
+                    bool sourceIsCurrentlyBetter = IsImageBetter(sourceImageEntry, existingTargetEntry);
 
                     if (sourceIsCurrentlyBetter)
                     {
@@ -1529,8 +1529,8 @@ namespace CosplayManager.ViewModels
             if (affectedProfileNamesForRefresh.Any())
             {
                 SimpleFileLogger.Log($"[HandleApproved] Końcowe odświeżanie profili (jeśli potrzebne) po obsłużeniu zatwierdzonych ruchów.");
-                _isRefreshingProfilesPostMove = true; // Ustaw flagę, aby InternalExecuteLoadProfilesAsync wiedziało, że trzeba odświeżyć liczniki
-                await InternalExecuteLoadProfilesAsync(token); // Pełne odświeżenie jest bezpieczniejsze
+                _isRefreshingProfilesPostMove = true;
+                await InternalExecuteLoadProfilesAsync(token);
                 _isRefreshingProfilesPostMove = false;
             }
 
@@ -1826,26 +1826,6 @@ namespace CosplayManager.ViewModels
                     await _profileService.RemoveProfileAsync(originalCharacterProfile.CategoryName);
                     SimpleFileLogger.Log($"SplitProfile: Usunięto stary profil '{originalCharacterProfile.CategoryName}'.");
 
-                    string oldCharacterPath = Path.Combine(LibraryRootPath, SanitizeFolderName(modelName), SanitizeFolderName(baseCharacterName)); // Oryginalna nazwa folderu postaci
-                    try
-                    {
-                        // Sprawdź, czy stary folder istnieje i czy jest pusty (po przeniesieniu wszystkich plików)
-                        // Ta logika jest ryzykowna, jeśli baseCharacterName było np. "General" i zawierało inne podfoldery.
-                        // Bezpieczniej jest nie usuwać automatycznie folderu, chyba że mamy pewność, że był dedykowany tylko temu profilowi.
-                        // Na razie pomińmy automatyczne usuwanie folderu.
-                        // if (Directory.Exists(oldCharacterPath) && !Directory.EnumerateFileSystemEntries(oldCharacterPath).Any())
-                        // {
-                        //    Directory.Delete(oldCharacterPath);
-                        //    SimpleFileLogger.Log($"SplitProfile: Usunięto pusty stary folder '{oldCharacterPath}'.");
-                        // }
-                        // else if(Directory.Exists(oldCharacterPath))
-                        // {
-                        //     SimpleFileLogger.LogWarning($"SplitProfile: Stary folder '{oldCharacterPath}' nie został usunięty, ponieważ nie jest pusty lub logika usuwania jest wyłączona.");
-                        // }
-                    }
-                    catch (Exception ex) { SimpleFileLogger.LogError($"SplitProfile: Błąd podczas próby usunięcia starego folderu '{oldCharacterPath}'", ex); }
-
-
                     StatusMessage = $"Profil '{originalCharacterProfile.CategoryName}' został podzielony na '{fullNewProfile1Name}' i '{fullNewProfile2Name}'.";
                     var uiProfile = HierarchicalProfilesList.SelectMany(m => m.CharacterProfiles).FirstOrDefault(p => p.CategoryName == originalCharacterProfile.CategoryName);
                     if (uiProfile != null) uiProfile.HasSplitSuggestion = false;
@@ -1894,5 +1874,217 @@ namespace CosplayManager.ViewModels
                 StatusMessage = $"Załadowano {loadedCount} z {imagesToLoadThumbs.Count} miniaturek (poproszono o {requestedCount}).";
                 SimpleFileLogger.Log(StatusMessage);
             }, "Ładowanie miniaturek");
+
+        private Task ExecuteRemoveDuplicatesInModelAsync(object? parameter) =>
+            RunLongOperation(async token =>
+            {
+                if (!(parameter is ModelDisplayViewModel modelVM))
+                {
+                    StatusMessage = "Błąd: Nieprawidłowy parametr dla usuwania duplikatów (oczekiwano ModelDisplayViewModel).";
+                    MessageBox.Show(StatusMessage, "Błąd Operacji", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                string modelName = modelVM.ModelName;
+                if (MessageBox.Show($"Czy na pewno chcesz wyszukać i usunąć graficznie identyczne duplikaty (pozostawiając tylko najlepszą jakość) we wszystkich profilach postaci dla modelki '{modelName}'?\nTa operacja usunie gorsze kopie plików z dysku.", "Potwierdź Usuwanie Duplikatów", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                {
+                    StatusMessage = "Usuwanie duplikatów anulowane przez użytkownika.";
+                    return;
+                }
+
+                StatusMessage = $"Rozpoczynanie usuwania duplikatów dla modelki: {modelName}...";
+                SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Rozpoczęto dla modelki: {modelName}. Token: {token.GetHashCode()}");
+
+                int totalDuplicatesRemovedSystemWide = 0;
+                var affectedProfileNamesForCentroidRecalculation = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                var characterProfilesSnapshot = modelVM.CharacterProfiles.ToList();
+
+                foreach (var characterProfile in characterProfilesSnapshot)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (characterProfile.SourceImagePaths == null || characterProfile.SourceImagePaths.Count < 2)
+                    {
+                        SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Profil '{characterProfile.CategoryName}' ma mniej niż 2 obrazy, pomijanie.");
+                        continue;
+                    }
+
+                    StatusMessage = $"Przetwarzanie profilu postaci: {characterProfile.CategoryName}...";
+                    SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Przetwarzanie profilu: {characterProfile.CategoryName}");
+
+                    var imageEntriesInProfile = new List<ImageFileEntry>();
+                    foreach (string imagePath in characterProfile.SourceImagePaths)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (!File.Exists(imagePath))
+                        {
+                            SimpleFileLogger.LogWarning($"[RemoveDuplicatesInModel] Plik '{imagePath}' z profilu '{characterProfile.CategoryName}' nie istnieje na dysku. Zostanie usunięty z definicji profilu.");
+                            affectedProfileNamesForCentroidRecalculation.Add(characterProfile.CategoryName);
+                            continue;
+                        }
+                        var entry = await _imageMetadataService.ExtractMetadataAsync(imagePath);
+                        if (entry != null)
+                        {
+                            entry.FeatureVector = await _profileService.GetImageEmbeddingAsync(entry);
+                            if (entry.FeatureVector != null)
+                            {
+                                imageEntriesInProfile.Add(entry);
+                            }
+                            else
+                            {
+                                SimpleFileLogger.LogWarning($"[RemoveDuplicatesInModel] Nie udało się pobrać embeddingu dla '{entry.FilePath}' w profilu '{characterProfile.CategoryName}'. Pomijanie tego obrazu w analizie duplikatów.");
+                            }
+                        }
+                    }
+                    token.ThrowIfCancellationRequested();
+
+                    if (imageEntriesInProfile.Count < 2)
+                    {
+                        SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Profil '{characterProfile.CategoryName}' po weryfikacji plików i embeddingów ma mniej niż 2 obrazy. Pomijanie.");
+                        if (affectedProfileNamesForCentroidRecalculation.Contains(characterProfile.CategoryName))
+                        {
+                            SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Profil '{characterProfile.CategoryName}' wymaga aktualizacji z powodu brakujących plików. Aktualna liczba wpisów: {imageEntriesInProfile.Count}");
+                            await _profileService.GenerateProfileAsync(characterProfile.CategoryName, imageEntriesInProfile);
+                        }
+                        continue;
+                    }
+
+                    var filesToRemovePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var uniqueImagesToKeep = new Dictionary<ulong, ImageFileEntry>(); // Używamy perceptual hash jako klucza do szybkiego grupowania potencjalnych duplikatów
+
+                    // Wstępne grupowanie po perceptual hash (jeśli dostępne)
+                    // TODO: Implementacja logiki z perceptual hash jeśli jest on obliczany i dostępny
+                    // Na razie proste N*N porównanie embeddingów.
+
+                    var processedInThisProfile = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // Zapobiega wielokrotnemu przetwarzaniu tego samego pliku jako "currentImage"
+
+                    for (int i = 0; i < imageEntriesInProfile.Count; i++)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var currentImage = imageEntriesInProfile[i];
+                        if (filesToRemovePaths.Contains(currentImage.FilePath) || processedInThisProfile.Contains(currentImage.FilePath)) continue;
+
+                        var duplicateGroup = new List<ImageFileEntry> { currentImage };
+
+                        for (int j = i + 1; j < imageEntriesInProfile.Count; j++)
+                        {
+                            token.ThrowIfCancellationRequested();
+                            var otherImage = imageEntriesInProfile[j];
+                            if (filesToRemovePaths.Contains(otherImage.FilePath) || processedInThisProfile.Contains(otherImage.FilePath)) continue;
+
+                            if (currentImage.FeatureVector != null && otherImage.FeatureVector != null)
+                            {
+                                double similarity = Utils.MathUtils.CalculateCosineSimilarity(currentImage.FeatureVector, otherImage.FeatureVector);
+                                if (similarity >= DUPLICATE_SIMILARITY_THRESHOLD)
+                                {
+                                    duplicateGroup.Add(otherImage);
+                                }
+                            }
+                        }
+
+                        if (duplicateGroup.Count > 1) // Znaleziono grupę duplikatów
+                        {
+                            ImageFileEntry bestImageInGroup = duplicateGroup.First();
+                            foreach (var imageInGroup in duplicateGroup.Skip(1))
+                            {
+                                if (IsImageBetter(imageInGroup, bestImageInGroup))
+                                {
+                                    bestImageInGroup = imageInGroup;
+                                }
+                            }
+
+                            // Oznacz wszystkie inne w grupie (poza najlepszym) do usunięcia
+                            foreach (var imageInGroup in duplicateGroup)
+                            {
+                                if (!imageInGroup.FilePath.Equals(bestImageInGroup.FilePath, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    filesToRemovePaths.Add(imageInGroup.FilePath);
+                                    SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Oznaczono duplikat do usunięcia: '{imageInGroup.FilePath}' (lepsza wersja: '{bestImageInGroup.FilePath}') w profilu '{characterProfile.CategoryName}'.");
+                                }
+                                processedInThisProfile.Add(imageInGroup.FilePath); // Oznacz jako przetworzony
+                            }
+                        }
+                        else
+                        {
+                            processedInThisProfile.Add(currentImage.FilePath); // Nie jest duplikatem, oznacz jako przetworzony
+                        }
+                    } // Koniec pętli zewnętrznej (i)
+                    token.ThrowIfCancellationRequested();
+
+                    if (filesToRemovePaths.Any())
+                    {
+                        SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Profil '{characterProfile.CategoryName}': Znaleziono {filesToRemovePaths.Count} duplikatów do usunięcia z dysku.");
+                        int removedThisProfile = 0;
+                        foreach (var pathToRemove in filesToRemovePaths)
+                        {
+                            token.ThrowIfCancellationRequested();
+                            try
+                            {
+                                if (File.Exists(pathToRemove))
+                                {
+                                    File.Delete(pathToRemove);
+                                    SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Usunięto plik z dysku: {pathToRemove}");
+                                    totalDuplicatesRemovedSystemWide++;
+                                    removedThisProfile++;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                SimpleFileLogger.LogError($"[RemoveDuplicatesInModel] Błąd podczas usuwania pliku duplikatu '{pathToRemove}' z dysku.", ex);
+                            }
+                        }
+
+                        // Zaktualizuj profil postaci, używając tylko plików, które nie zostały usunięte
+                        var keptImageEntries = imageEntriesInProfile.Where(e => !filesToRemovePaths.Contains(e.FilePath)).ToList();
+                        await _profileService.GenerateProfileAsync(characterProfile.CategoryName, keptImageEntries);
+                        affectedProfileNamesForCentroidRecalculation.Add(characterProfile.CategoryName);
+                        SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Profil '{characterProfile.CategoryName}' zaktualizowany. Usunięto {removedThisProfile} plików. Pozostało: {keptImageEntries.Count}.");
+                    }
+                    else if (affectedProfileNamesForCentroidRecalculation.Contains(characterProfile.CategoryName)) // Jeśli nie było duplikatów, ale były brakujące pliki
+                    {
+                        SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Profil '{characterProfile.CategoryName}' nie miał duplikatów, ale wymaga aktualizacji z powodu wcześniejszych brakujących plików.");
+                        var validEntries = imageEntriesInProfile.Where(e => File.Exists(e.FilePath)).ToList(); // Upewnij się, że przekazujesz tylko istniejące
+                        await _profileService.GenerateProfileAsync(characterProfile.CategoryName, validEntries);
+                    }
+                    else
+                    {
+                        SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Profil '{characterProfile.CategoryName}': Nie znaleziono duplikatów do usunięcia.");
+                    }
+
+                } // Koniec pętli po profilach postaci
+                token.ThrowIfCancellationRequested();
+
+                if (totalDuplicatesRemovedSystemWide > 0 || affectedProfileNamesForCentroidRecalculation.Any())
+                {
+                    StatusMessage = $"Zakończono usuwanie duplikatów dla modelki '{modelName}'. Usunięto łącznie: {totalDuplicatesRemovedSystemWide} plików. Odświeżanie widoku...";
+                    _isRefreshingProfilesPostMove = true;
+                    await InternalExecuteLoadProfilesAsync(token);
+                    _isRefreshingProfilesPostMove = false;
+                    MessageBox.Show($"Usunięto {totalDuplicatesRemovedSystemWide} zduplikowanych plików dla modelki '{modelName}'.", "Usuwanie Duplikatów Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    StatusMessage = $"Nie znaleziono żadnych duplikatów do usunięcia dla modelki '{modelName}'.";
+                    MessageBox.Show(StatusMessage, "Usuwanie Duplikatów Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+
+            }, "Usuwanie duplikatów w profilach modelki");
+
+
+        // Pomocnicza klasa do porównywania ImageFileEntry po ścieżce dla HashSet
+        private class ImageFileEntryPathComparer : IEqualityComparer<ImageFileEntry>
+        {
+            public bool Equals(ImageFileEntry x, ImageFileEntry y)
+            {
+                if (ReferenceEquals(x, y)) return true;
+                if (x is null || y is null) return false;
+                return x.FilePath.Equals(y.FilePath, StringComparison.OrdinalIgnoreCase);
+            }
+
+            public int GetHashCode(ImageFileEntry obj)
+            {
+                return obj.FilePath?.GetHashCode(StringComparison.OrdinalIgnoreCase) ?? 0;
+            }
+        }
     }
 }
