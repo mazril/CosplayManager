@@ -1889,4 +1889,4 @@ namespace CosplayManager.ViewModels
             }
         }
     }
-}
+} 
