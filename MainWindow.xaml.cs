@@ -163,13 +163,14 @@ namespace CosplayManager
 
         private async void TestClipButton_Click(object sender, RoutedEventArgs e)
         {
-            if (_clipService == null)
+            if (_clipService == null && _profileServiceInstance == null) // SprawdŸ obie us³ugi
             {
-                MessageBox.Show("Us³uga CLIP nie zosta³a zainicjalizowana.", "B³¹d us³ugi", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show("Us³uga CLIP oraz ProfileService nie zosta³y zainicjalizowane.", "B³¹d us³ugi", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
-            if (!await _clipService.IsServerRunningAsync(checkEmbedderInitialization: true))
+            // Sprawdzenie gotowoœci serwera CLIP
+            if (_clipService != null && !await _clipService.IsServerRunningAsync(checkEmbedderInitialization: true))
             {
                 var result = MessageBox.Show("Serwer AI (CLIP) nie jest gotowy lub nie dzia³a poprawnie. Czy spróbowaæ go uruchomiæ/zrestartowaæ?",
                                              "Serwer AI niegotowy", MessageBoxButton.YesNo, MessageBoxImage.Warning);
@@ -202,16 +203,28 @@ namespace CosplayManager
 
                 try
                 {
-                    // Test directly with ProfileService to use the cache
                     float[]? embedding = null;
-                    if (_profileServiceInstance != null)
+                    if (_profileServiceInstance != null && _imageMetadataService != null) // Upewnij siê, ¿e ImageMetadataService te¿ jest dostêpny
                     {
-                        embedding = await _profileServiceInstance.GetImageEmbeddingAsync(imageFilePath);
+                        // Utwórz ImageFileEntry, aby uzyskaæ metadane potrzebne dla cache'u
+                        var imageEntry = await _imageMetadataService.ExtractMetadataAsync(imageFilePath);
+                        if (imageEntry != null)
+                        {
+                            // ZMIANA WYWO£ANIA GetImageEmbeddingAsync
+                            embedding = await _profileServiceInstance.GetImageEmbeddingAsync(imageEntry);
+                        }
+                        else
+                        {
+                            SimpleFileLogger.LogWarning($"TestClipButton: Nie uda³o siê utworzyæ ImageFileEntry dla {imageFilePath}");
+                        }
                     }
-                    else // Fallback or direct call if profile service not ready (should not happen in normal flow)
+                    // Opcjonalny fallback, jeœli ProfileService nie jest gotowy (choæ powinien byæ)
+                    else if (_clipService != null)
                     {
+                        SimpleFileLogger.LogWarning("TestClipButton: ProfileService lub ImageMetadataService niedostêpne, próba bezpoœredniego wywo³ania CLIPService.");
                         embedding = await _clipService.GetImageEmbeddingFromPathAsync(imageFilePath);
                     }
+
 
                     if (embedding != null && embedding.Any())
                     {
