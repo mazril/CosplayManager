@@ -16,28 +16,34 @@ namespace CosplayManager.Views
             this.Closing += PreviewChangesWindow_Closing;
         }
 
-        // Ta metoda jest wywoływana z MainWindowViewModel, aby przekazać akcję zamknięcia DO ViewModelu tego okna
+        // Ta metoda powinna być publiczna i wywoływana z MainWindowViewModel
         public void SetViewModelCloseAction(PreviewChangesViewModel vm)
         {
             if (vm != null)
             {
+                // Ustawiamy publiczną właściwość CloseAction w ViewModelu
                 vm.CloseAction = (dialogResult) =>
                 {
                     SimpleFileLogger.Log($"PreviewChangesWindow: Akcja CloseAction z ViewModelu została wywołana z wynikiem: {dialogResult}.");
                     try
                     {
-                        // Ustaw DialogResult okna, co spowoduje jego zamknięcie
+                        // Ustawiamy DialogResult okna, co spowoduje jego zamknięcie
                         // To powinno być bezpieczne do wywołania, nawet jeśli jest już zamykane.
-                        if (this.IsVisible) // Tylko jeśli okno jest nadal widoczne/aktywne jako dialog
+                        // Sprawdź, czy okno jest nadal aktywne jako dialog
+                        if (System.Windows.Interop.ComponentDispatcher.IsThreadModal && this.IsVisible)
                         {
                             Application.Current.Dispatcher.Invoke(() => this.DialogResult = dialogResult);
+                        }
+                        else if (this.IsLoaded && this.IsVisible) // Jeśli nie jest modalne, ale wciąż widoczne
+                        {
+                            Application.Current.Dispatcher.Invoke(() => this.Close());
                         }
                     }
                     catch (InvalidOperationException ioe)
                     {
-                        SimpleFileLogger.LogError($"PreviewChangesWindow: InvalidOperationException podczas ustawiania DialogResult: {ioe.Message}. Okno mogło nie zostać poprawnie zamknięte.", ioe);
-                        // Awaryjne zamknięcie, jeśli ustawienie DialogResult zawiedzie, a okno jest nadal widoczne
-                        Application.Current.Dispatcher.Invoke(() => { if (this.IsVisible && this.IsLoaded) this.Close(); });
+                        SimpleFileLogger.LogError($"PreviewChangesWindow: InvalidOperationException podczas ustawiania DialogResult lub zamykania: {ioe.Message}. Okno mogło nie zostać poprawnie zamknięte.", ioe);
+                        // Awaryjne zamknięcie, jeśli coś pójdzie nie tak
+                        Application.Current.Dispatcher.Invoke(() => { if (this.IsLoaded && this.IsVisible) this.Close(); });
                     }
                 };
             }
@@ -58,8 +64,7 @@ namespace CosplayManager.Views
 
             if (this.DataContext is PreviewChangesViewModel vm)
             {
-                // Dodatkowe czyszczenie w ViewModelu, jeśli jest potrzebne
-                // np. vm.CleanupBeforeClose();
+                // vm.CloseAction = null; // Można rozważyć, aby uniknąć wycieków, jeśli VM żyje dłużej niż okno
             }
             this.DataContext = null;
             SimpleFileLogger.Log("PreviewChangesWindow.PrepareToCloseWindowResources: DataContext okna ustawiony na null.");
@@ -67,8 +72,9 @@ namespace CosplayManager.Views
 
         private void PreviewChangesWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
-            SimpleFileLogger.Log($"PreviewChangesWindow.Closing: Zdarzenie zamykania okna. DialogResult: {this.DialogResult}");
+            SimpleFileLogger.Log($"PreviewChangesWindow.Closing: Zdarzenie zamykania okna. DialogResult przed PrepareToClose: {this.DialogResult}");
             PrepareToCloseWindowResources();
+            SimpleFileLogger.Log($"PreviewChangesWindow.Closing: Zdarzenie zamykania okna zakończone. DialogResult po PrepareToClose: {this.DialogResult}");
         }
     }
 }
