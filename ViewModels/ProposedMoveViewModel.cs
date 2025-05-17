@@ -11,26 +11,24 @@ namespace CosplayManager.ViewModels
 {
     public class ProposedMoveViewModel : ObservableObject
     {
-        private readonly ProposedMove _move; // Przechowujemy oryginalny model
-        private bool _isApprovedForMove; // Zmieniono z IsApproved, aby pasowało do logiki
+        private readonly ProposedMove _move;
+        private bool _isApprovedForMove;
         private BitmapImage? _sourceThumbnail;
         private BitmapImage? _targetThumbnail;
-        private bool _isLoadingSourceThumbnail; // Zmieniono z _isLoadingThumbnails
-        private bool _isLoadingTargetThumbnail; // Dodano dla targetu
+        private bool _isLoadingSourceThumbnail;
+        private bool _isLoadingTargetThumbnail;
 
         public ProposedMove OriginalMove => _move;
 
         public ImageFileEntry SourceImage => _move.SourceImage;
-        public ImageFileEntry? TargetImageDisplay => _move.TargetImage; // Używamy _move.TargetImage
+        public ImageFileEntry? TargetImageDisplay => _move.TargetImageDisplay; // POPRAWIONA NAZWA
         public string ProposedTargetPath => _move.ProposedTargetPath;
         public double Similarity => _move.Similarity;
         public string TargetCategoryProfileName => _move.TargetCategoryProfileName;
 
-        // Akcja jest teraz pobierana bezpośrednio z modelu
         public ProposedMoveActionType Action { get => _move.Action; set { if (_move.Action != value) { _move.Action = value; OnPropertyChanged(); OnPropertyChanged(nameof(ActionDescription)); } } }
 
-
-        public bool IsApprovedForMove // Zmieniono z IsApproved
+        public bool IsApprovedForMove
         {
             get => _isApprovedForMove;
             set => SetProperty(ref _isApprovedForMove, value);
@@ -83,52 +81,48 @@ namespace CosplayManager.ViewModels
         public ProposedMoveViewModel(Models.ProposedMove modelMove)
         {
             _move = modelMove;
-            _isApprovedForMove = (modelMove.Action != ProposedMoveActionType.NoAction); // Domyślnie wszystko co nie jest NoAction jest do zatwierdzenia
-
-            // Asynchroniczne ładowanie miniaturek, nie blokuje konstruktora
-            _ = LoadThumbnailsAsync(); // _ discards the task if you don't need to await it here
+            _isApprovedForMove = (modelMove.Action != ProposedMoveActionType.NoAction);
+            _ = LoadThumbnailsAsync();
         }
 
-        public async Task LoadThumbnailsAsync() // Publiczna, aby można było ją wywołać z PreviewChangesViewModel
+        public async Task LoadThumbnailsAsync()
         {
             if (SourceImage != null && SourceThumbnail == null && !IsLoadingSourceThumbnail)
             {
                 IsLoadingSourceThumbnail = true;
-                if (SourceImage.Thumbnail != null) // Sprawdź, czy ImageFileEntry już ma miniaturkę
+                if (SourceImage.Thumbnail != null)
                 {
                     SourceThumbnail = SourceImage.Thumbnail;
                 }
                 else
                 {
-                    await SourceImage.LoadThumbnailAsync(); // Użyj metody z ImageFileEntry
+                    await SourceImage.LoadThumbnailAsync();
                     SourceThumbnail = SourceImage.Thumbnail;
                 }
                 IsLoadingSourceThumbnail = false;
             }
 
-            if (TargetImageDisplay != null && TargetThumbnail == null && !IsLoadingTargetThumbnail)
+            if (TargetImageDisplay != null && TargetThumbnail == null && !IsLoadingTargetThumbnail) // POPRAWIONA NAZWA
             {
                 IsLoadingTargetThumbnail = true;
-                if (TargetImageDisplay.Thumbnail != null)
+                if (TargetImageDisplay.Thumbnail != null) // POPRAWIONA NAZWA
                 {
-                    TargetThumbnail = TargetImageDisplay.Thumbnail;
+                    TargetThumbnail = TargetImageDisplay.Thumbnail; // POPRAWIONA NAZWA
                 }
                 else
                 {
-                    await TargetImageDisplay.LoadThumbnailAsync();
-                    TargetThumbnail = TargetImageDisplay.Thumbnail;
+                    await TargetImageDisplay.LoadThumbnailAsync(); // POPRAWIONA NAZWA
+                    TargetThumbnail = TargetImageDisplay.Thumbnail; // POPRAWIONA NAZWA
                 }
                 IsLoadingTargetThumbnail = false;
             }
         }
-        // Metoda CreateThumbnailAsync nie jest już potrzebna, bo ImageFileEntry ma LoadThumbnailAsync
 
-        public void ReleaseThumbnails() // Opcjonalne, jeśli chcemy agresywnie zwalniać pamięć
+        public void ReleaseThumbnails()
         {
             SimpleFileLogger.Log($"Releasing thumbnails for Source: {SourceImage?.FileName}, Target: {TargetImageDisplay?.FileName}");
             SourceThumbnail = null;
             TargetThumbnail = null;
-            // Można też wywołać GC.Collect() tutaj, ale to zwykle nie jest zalecane.
         }
     }
 }
