@@ -1,159 +1,123 @@
-﻿// Plik: CosplayManager/ViewModels/ProposedMoveViewModel.cs
+﻿// Plik: ViewModels/ProposedMoveViewModel.cs
 using CosplayManager.Models;
-using CosplayManager.ViewModels.Base;
-using CosplayManager.Services;
-using System;
-using System.IO;
-using System.Threading.Tasks;
-using System.Windows.Media.Imaging;
+using CosplayManager.Services; // Potrzebne dla SimpleFileLogger, jeśli go tu używamy
+using CosplayManager.ViewModels.Base; // Potrzebne dla ObservableObject
+using System.IO; // Dla Path
+using System.Threading.Tasks; // Dla Task
+using System.Windows.Media.Imaging; // Dla BitmapImage
 
 namespace CosplayManager.ViewModels
 {
-    public class ProposedMoveViewModel : ObservableObject // Zmieniono na public
+    public class ProposedMoveViewModel : ObservableObject
     {
-        // ... (reszta kodu bez zmian)
-        private ImageFileEntry _sourceImage;
-        public ImageFileEntry SourceImage
-        {
-            get => _sourceImage;
-            set => SetProperty(ref _sourceImage, value);
-        }
-
-        private ImageFileEntry? _targetImage;
-        public ImageFileEntry? TargetImage
-        {
-            get => _targetImage;
-            set => SetProperty(ref _targetImage, value);
-        }
-
-        private string _proposedTargetPath;
-        public string ProposedTargetPath
-        {
-            get => _proposedTargetPath;
-            set => SetProperty(ref _proposedTargetPath, value);
-        }
-
-        private double _similarity;
-        public double Similarity
-        {
-            get => _similarity;
-            set => SetProperty(ref _similarity, value);
-        }
-
-        private bool _isApprovedForMove;
-        public bool IsApprovedForMove
-        {
-            get => _isApprovedForMove;
-            set => SetProperty(ref _isApprovedForMove, value);
-        }
-
-        private ProposedMoveActionType _action;
-        public ProposedMoveActionType Action
-        {
-            get => _action;
-            set => SetProperty(ref _action, value);
-        }
-
-        private string _targetCategoryProfileName;
-        public string TargetCategoryProfileName
-        {
-            get => _targetCategoryProfileName;
-            set => SetProperty(ref _targetCategoryProfileName, value);
-        }
-
+        private readonly ProposedMove _move;
+        private bool _isApproved;
         private BitmapImage? _sourceThumbnail;
+        private BitmapImage? _targetThumbnail;
+        private bool _isLoadingSourceThumbnail;
+        private bool _isLoadingTargetThumbnail;
+
+        public ProposedMove OriginalMove => _move;
+
+        public ImageFileEntry SourceImage => _move.SourceImage;
+        public ImageFileEntry? TargetImageDisplay => _move.TargetImageDisplay; // ZMIANA NAZWY
+        public string ProposedTargetPath => _move.ProposedTargetPath;
+        public double Similarity => _move.Similarity;
+        public string TargetCategoryProfileName => _move.TargetCategoryProfileName;
+        public ProposedMoveActionType Action { get => _move.Action; set { _move.Action = value; OnPropertyChanged(); OnPropertyChanged(nameof(ActionDescription)); } }
+
+
+        public bool IsApproved
+        {
+            get => _isApproved;
+            set => SetProperty(ref _isApproved, value);
+        }
+
         public BitmapImage? SourceThumbnail
         {
             get => _sourceThumbnail;
             private set => SetProperty(ref _sourceThumbnail, value);
         }
 
-        private BitmapImage? _targetThumbnail;
         public BitmapImage? TargetThumbnail
         {
             get => _targetThumbnail;
             private set => SetProperty(ref _targetThumbnail, value);
         }
 
-        private bool _isLoadingThumbnails;
-        public bool IsLoadingThumbnails
+        public bool IsLoadingSourceThumbnail
         {
-            get => _isLoadingThumbnails;
-            private set => SetProperty(ref _isLoadingThumbnails, value);
+            get => _isLoadingSourceThumbnail;
+            private set => SetProperty(ref _isLoadingSourceThumbnail, value);
+        }
+        public bool IsLoadingTargetThumbnail
+        {
+            get => _isLoadingTargetThumbnail;
+            private set => SetProperty(ref _isLoadingTargetThumbnail, value);
         }
 
-        public ProposedMoveViewModel(Models.ProposedMove modelMove)
+        public string SourceFileName => Path.GetFileName(SourceImage.FilePath);
+        public string TargetFileNameDisplay => TargetImageDisplay != null ? Path.GetFileName(TargetImageDisplay.FilePath) : (Action == ProposedMoveActionType.CopyNew || Action == ProposedMoveActionType.OverwriteExisting ? Path.GetFileName(ProposedTargetPath) : "---");
+
+
+        public string ActionDescription
         {
-            _sourceImage = modelMove.SourceImage;
-            _targetImage = modelMove.TargetImage;
-            _proposedTargetPath = modelMove.ProposedTargetPath;
-            _similarity = modelMove.Similarity;
-            _isApprovedForMove = true;
-
-            _action = modelMove.Action;
-            _targetCategoryProfileName = modelMove.TargetCategoryProfileName;
-
-            _ = LoadThumbnailsAsync();
-        }
-
-        private async Task LoadThumbnailsAsync()
-        {
-            IsLoadingThumbnails = true;
-            try
+            get
             {
-                if (SourceImage != null && !string.IsNullOrWhiteSpace(SourceImage.FilePath) && File.Exists(SourceImage.FilePath))
+                switch (Action)
                 {
-                    SourceThumbnail = await CreateThumbnailAsync(SourceImage.FilePath, 150);
-                }
-                if (TargetImage != null && !string.IsNullOrWhiteSpace(TargetImage.FilePath) && File.Exists(TargetImage.FilePath))
-                {
-                    TargetThumbnail = await CreateThumbnailAsync(TargetImage.FilePath, 150);
+                    case ProposedMoveActionType.CopyNew: return $"Kopiuj jako nowy do '{TargetCategoryProfileName}'";
+                    case ProposedMoveActionType.OverwriteExisting: return $"Nadpisz istniejący w '{TargetCategoryProfileName}'";
+                    case ProposedMoveActionType.KeepExistingDeleteSource: return $"Zachowaj w '{TargetCategoryProfileName}', usuń źródło";
+                    case ProposedMoveActionType.ConflictKeepBoth: return $"Konflikt nazwy w '{TargetCategoryProfileName}'. Zachowaj oba (zmień nazwę).";
+                    case ProposedMoveActionType.NoAction: return "Brak akcji";
+                    default: return Action.ToString();
                 }
             }
-            catch (Exception ex)
-            {
-                SimpleFileLogger.LogError($"Error loading thumbnails for source: {SourceImage?.FilePath}, target: {TargetImage?.FilePath}", ex);
-            }
-            finally
-            {
-                IsLoadingThumbnails = false;
-            }
         }
 
-        private Task<BitmapImage?> CreateThumbnailAsync(string filePath, int size)
+        public ProposedMoveViewModel(ProposedMove move)
         {
-            return Task.Run(() =>
-            {
-                try
-                {
-                    if (!File.Exists(filePath))
-                    {
-                        SimpleFileLogger.Log($"CreateThumbnailAsync: File not found '{filePath}'");
-                        return null;
-                    }
-
-                    BitmapImage bitmap = new BitmapImage();
-                    bitmap.BeginInit();
-                    bitmap.UriSource = new Uri(filePath);
-                    bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                    bitmap.DecodePixelWidth = size;
-                    bitmap.EndInit();
-                    bitmap.Freeze();
-                    return bitmap;
-                }
-                catch (Exception ex)
-                {
-                    SimpleFileLogger.LogError($"Error creating thumbnail for {filePath}", ex);
-                    return null;
-                }
-            });
+            _move = move;
+            // Domyślnie wszystkie sugestie są zatwierdzone, użytkownik odznacza te, których nie chce
+            _isApproved = (move.Action != ProposedMoveActionType.NoAction);
         }
 
-        public void ReleaseThumbnails()
+        public async Task LoadThumbnailsAsync()
         {
-            SimpleFileLogger.Log($"Releasing thumbnails for Source: {SourceImage?.FileName}, Target: {TargetImage?.FileName}");
-            SourceThumbnail = null;
-            TargetThumbnail = null;
+            if (SourceImage != null && SourceThumbnail == null && !IsLoadingSourceThumbnail)
+            {
+                IsLoadingSourceThumbnail = true;
+                // SourceImage powinien być kompletnym ImageFileEntry z metadanymi
+                // Jeśli SourceImage.Thumbnail jest już załadowany przez ImageFileEntry, użyj go
+                if (SourceImage.Thumbnail != null)
+                {
+                    SourceThumbnail = SourceImage.Thumbnail;
+                }
+                else
+                {
+                    // Await LoadThumbnailAsync from ImageFileEntry
+                    await SourceImage.LoadThumbnailAsync();
+                    SourceThumbnail = SourceImage.Thumbnail;
+                }
+                IsLoadingSourceThumbnail = false;
+            }
+
+            // ZMIANA NAZWY: TargetImageDisplay
+            if (TargetImageDisplay != null && TargetThumbnail == null && !IsLoadingTargetThumbnail)
+            {
+                IsLoadingTargetThumbnail = true;
+                if (TargetImageDisplay.Thumbnail != null)
+                {
+                    TargetThumbnail = TargetImageDisplay.Thumbnail;
+                }
+                else
+                {
+                    await TargetImageDisplay.LoadThumbnailAsync();
+                    TargetThumbnail = TargetImageDisplay.Thumbnail;
+                }
+                IsLoadingTargetThumbnail = false;
+            }
         }
     }
 }
