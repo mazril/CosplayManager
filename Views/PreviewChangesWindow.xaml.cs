@@ -1,88 +1,83 @@
-﻿// Plik: CosplayManager/Views/PreviewChangesWindow.xaml.cs
+﻿// Plik: Views/PreviewChangesWindow.xaml.cs
 using CosplayManager.Services;
 using CosplayManager.ViewModels;
 using System;
 using System.Windows;
-using System.Windows.Controls;
-using MahApps.Metro.Controls; // <<< UPEWNIJ SIĘ, ŻE TA LINIA JEST OBECNA
+using System.Windows.Controls; // Dla ItemsControl
+using MahApps.Metro.Controls;
 
 namespace CosplayManager.Views
 {
-    public partial class PreviewChangesWindow : MetroWindow // <<< ZMIENIONO KLASĘ BAZOWĄ
+    public partial class PreviewChangesWindow : MetroWindow
     {
         public PreviewChangesWindow()
         {
             InitializeComponent();
+            this.Closing += PreviewChangesWindow_Closing; // Dodajemy obsługę zdarzenia Closing
         }
 
-        public void PrepareToClose()
-        {
-            SimpleFileLogger.Log("PreviewChangesWindow.PrepareToClose: Rozpoczęto czyszczenie przed zamknięciem.");
-
-            // Bezpośrednie odwołanie do kontrolki ListView z x:Name
-            if (this.ProposedMovesListView is ItemsControl itemsControl)
-            {
-                SimpleFileLogger.Log("PreviewChangesWindow.PrepareToClose: Znaleziono ProposedMovesListView. Odłączanie ItemsSource.");
-                itemsControl.ItemsSource = null;
-                // itemsControl.Items.Clear(); // Opcjonalnie, ale odłączenie ItemsSource powinno wystarczyć
-            }
-            else
-            {
-                SimpleFileLogger.Log("PreviewChangesWindow.PrepareToClose: NIE znaleziono ProposedMovesListView o nazwie 'ProposedMovesListView'.");
-            }
-
-            var currentDataContext = this.DataContext;
-            if (currentDataContext != null)
-            {
-                this.DataContext = null; // Odłącz DataContext
-                SimpleFileLogger.Log("PreviewChangesWindow.PrepareToClose: DataContext okna ustawiony na null.");
-            }
-
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            SimpleFileLogger.Log("PreviewChangesWindow.PrepareToClose: Wywołano GC.Collect() i WaitForPendingFinalizers().");
-        }
-
-        public void SetCloseAction(PreviewChangesViewModel vm)
+        // Metoda do ustawienia akcji zamykania z MainWindowViewModel
+        // Ta metoda powinna być wywoływana z MainWindowViewModel PO utworzeniu instancji PreviewChangesWindow
+        // a PRZED jej wyświetleniem (ShowDialog).
+        public void SetViewModelCloseAction(PreviewChangesViewModel vm)
         {
             if (vm != null)
             {
-                vm.CloseAction = (result) =>
+                // Ustawiamy właściwość CloseAction w ViewModelu, aby ViewModel mógł wywołać zamknięcie okna
+                vm.CloseAction = (dialogResult) =>
                 {
-                    SimpleFileLogger.Log($"PreviewChangesWindow.CloseAction (z VM): Otrzymano result: {result}. Wywołanie PrepareToClose().");
-                    PrepareToClose();
-
+                    SimpleFileLogger.Log($"PreviewChangesWindow: CloseAction z ViewModelu wywołane z wynikiem: {dialogResult}.");
                     try
                     {
-                        if (System.Windows.Interop.ComponentDispatcher.IsThreadModal && this.IsVisible)
+                        // Ustawiamy DialogResult okna, co spowoduje jego zamknięcie
+                        // Należy to robić w wątku UI, jeśli ViewModel wywołuje to z innego wątku
+                        Application.Current.Dispatcher.Invoke(() =>
                         {
-                            this.DialogResult = result;
-                        }
+                            this.DialogResult = dialogResult;
+                            // Samo ustawienie DialogResult powinno zamknąć okno dialogowe.
+                            // Wywołanie this.Close() tutaj może być zbędne lub nawet powodować problemy, jeśli DialogResult już to robi.
+                        });
                     }
                     catch (InvalidOperationException ioe)
                     {
-                        SimpleFileLogger.Log($"PreviewChangesWindow.CloseAction (z VM): InvalidOperationException podczas ustawiania DialogResult: {ioe.Message}");
-                    }
-
-                    // Sprawdź, czy okno nadal jest "aktywne" w drzewie wizualnym przed próbą zamknięcia
-                    if (this.IsLoaded && PresentationSource.FromVisual(this) != null)
-                    {
-                        if (this.IsVisible) // Dodatkowe sprawdzenie, czy jest widoczne
-                        {
-                            SimpleFileLogger.Log("PreviewChangesWindow.CloseAction (z VM): Zamykanie okna.");
-                            this.Close();
-                        }
-                        else
-                        {
-                            SimpleFileLogger.Log("PreviewChangesWindow.CloseAction (z VM): Okno nie jest widoczne, pomijanie Close().");
-                        }
-                    }
-                    else
-                    {
-                        SimpleFileLogger.Log("PreviewChangesWindow.CloseAction (z VM): Okno nie jest już załadowane/częścią drzewa wizualnego, pomijanie Close().");
+                        SimpleFileLogger.LogError($"PreviewChangesWindow: InvalidOperationException podczas ustawiania DialogResult: {ioe.Message}. Okno może nie zostać poprawnie zamknięte.", ioe);
+                        // Awaryjne zamknięcie, jeśli ustawienie DialogResult zawiedzie
+                        Application.Current.Dispatcher.Invoke(() => { if (this.IsVisible) this.Close(); });
                     }
                 };
             }
+        }
+
+        // Metoda do czyszczenia zasobów przed faktycznym zamknięciem okna
+        private void PrepareToCloseWindowResources()
+        {
+            SimpleFileLogger.Log("PreviewChangesWindow.PrepareToCloseWindowResources: Rozpoczęto czyszczenie zasobów okna.");
+            if (this.ProposedMovesListView is ItemsControl itemsControl)
+            {
+                itemsControl.ItemsSource = null;
+                SimpleFileLogger.Log("PreviewChangesWindow.PrepareToCloseWindowResources: ItemsSource ProposedMovesListView ustawiony na null.");
+            }
+
+            if (this.DataContext is PreviewChangesViewModel vm)
+            {
+                // Jeśli ViewModel ma jakieś zasoby do zwolnienia, można to zrobić tutaj
+                // np. vm.Cleanup(); 
+                // Na razie ViewModel sam zarządza swoją logiką
+            }
+            this.DataContext = null;
+            SimpleFileLogger.Log("PreviewChangesWindow.PrepareToCloseWindowResources: DataContext okna ustawiony na null.");
+
+            // Agresywne czyszczenie pamięci - używać ostrożnie i tylko jeśli są problemy z pamięcią
+            // GC.Collect();
+            // GC.WaitForPendingFinalizers();
+            // SimpleFileLogger.Log("PreviewChangesWindow.PrepareToCloseWindowResources: Wywołano GC.Collect().");
+        }
+
+        // Obsługa zdarzenia Closing okna
+        private void PreviewChangesWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            SimpleFileLogger.Log("PreviewChangesWindow.Closing: Zdarzenie zamykania okna.");
+            PrepareToCloseWindowResources(); // Wyczyść zasoby
         }
     }
 }
