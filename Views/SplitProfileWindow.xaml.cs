@@ -1,44 +1,61 @@
 ﻿// Plik: Views/SplitProfileWindow.xaml.cs
+using CosplayManager.Services; // Dodaj, jeśli SimpleFileLogger jest używany
 using CosplayManager.ViewModels;
-using MahApps.Metro.Controls; // Jeśli używasz MetroWindow
+using MahApps.Metro.Controls;
+using System; // Dodaj dla Action
 using System.Windows;
+
 
 namespace CosplayManager.Views
 {
-    public partial class SplitProfileWindow : MetroWindow // lub Window, jeśli nie używasz MahApps
+    public partial class SplitProfileWindow : MetroWindow
     {
         public SplitProfileWindow()
         {
             InitializeComponent();
+            this.Closing += SplitProfileWindow_Closing; // Opcjonalne, jeśli potrzebujesz logiki przy zamykaniu
         }
 
-        // Metoda do ustawienia akcji zamknięcia z ViewModelu
-        public void SetCloseAction(SplitProfileViewModel vm)
+        // Publiczna metoda do ustawienia akcji zamknięcia ViewModelu
+        public void SetViewModelCloseAction(SplitProfileViewModel vm)
         {
             if (vm != null)
             {
-                vm.CloseAction = (result) =>
+                vm.CloseAction = (dialogResult) =>
                 {
+                    SimpleFileLogger.Log($"SplitProfileWindow: Akcja CloseAction z ViewModelu została wywołana z wynikiem: {dialogResult}.");
                     try
                     {
-                        // Ustaw DialogResult tylko jeśli okno jest modalne i widoczne
                         if (System.Windows.Interop.ComponentDispatcher.IsThreadModal && this.IsVisible)
                         {
-                            this.DialogResult = result;
+                            Application.Current.Dispatcher.Invoke(() => this.DialogResult = dialogResult);
+                        }
+                        else if (this.IsLoaded && this.IsVisible)
+                        {
+                            Application.Current.Dispatcher.Invoke(() => this.Close());
                         }
                     }
-                    catch (System.InvalidOperationException)
+                    catch (InvalidOperationException ioe)
                     {
-                        // Może się zdarzyć, jeśli okno jest już zamykane inaczej
-                    }
-
-                    // Standardowe zamknięcie, jeśli nie jest już zamknięte przez DialogResult
-                    if (this.IsLoaded && PresentationSource.FromVisual(this) != null && this.IsVisible)
-                    {
-                        this.Close();
+                        SimpleFileLogger.LogError($"SplitProfileWindow: InvalidOperationException podczas ustawiania DialogResult lub zamykania: {ioe.Message}.", ioe);
+                        Application.Current.Dispatcher.Invoke(() => { if (this.IsLoaded && this.IsVisible) this.Close(); });
                     }
                 };
             }
+            else
+            {
+                SimpleFileLogger.LogWarning("SplitProfileWindow.SetViewModelCloseAction: Przekazany ViewModel był null.");
+            }
+        }
+        private void SplitProfileWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            SimpleFileLogger.Log($"SplitProfileWindow.Closing: Zdarzenie zamykania okna. DialogResult: {this.DialogResult}");
+            // Tutaj można dodać ewentualne czyszczenie zasobów, jeśli potrzebne
+            if (this.DataContext is SplitProfileViewModel vm)
+            {
+                // vm.CloseAction = null; // Rozważ, aby zapobiec wyciekom
+            }
+            this.DataContext = null;
         }
     }
 }
