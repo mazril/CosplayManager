@@ -15,7 +15,7 @@ namespace CosplayManager.Models
     public class ProposedMove
     {
         public ImageFileEntry SourceImage { get; set; }
-        public ImageFileEntry? TargetImageDisplay { get; set; } // Używamy tej nazwy
+        public ImageFileEntry? TargetImage { get; set; } // Używamy TargetImage zgodnie z Twoim plikiem
         public string ProposedTargetPath { get; set; }
         public double Similarity { get; set; }
         public string TargetCategoryProfileName { get; set; }
@@ -24,14 +24,14 @@ namespace CosplayManager.Models
         [JsonIgnore]
         public float[]? SourceImageEmbedding { get; }
 
-#pragma warning disable CS8618
+#pragma warning disable CS8618 
         public ProposedMove() { }
 #pragma warning restore CS8618
 
-        public ProposedMove(ImageFileEntry sourceImage, ImageFileEntry? targetImageDisplay, string proposedTargetPath, double similarity, string targetCategoryProfileName, ProposedMoveActionType action, float[]? sourceEmbedding = null)
+        public ProposedMove(ImageFileEntry sourceImage, ImageFileEntry? targetImage, string proposedTargetPath, double similarity, string targetCategoryProfileName, ProposedMoveActionType action, float[]? sourceEmbedding = null)
         {
             SourceImage = sourceImage;
-            TargetImageDisplay = targetImageDisplay; // Używamy tej nazwy
+            TargetImage = targetImage; // Używamy TargetImage
             ProposedTargetPath = proposedTargetPath;
             Similarity = similarity;
             TargetCategoryProfileName = targetCategoryProfileName;
