@@ -1,4 +1,5 @@
-﻿// Plik: CosplayManager/ViewModels/PreviewChangesViewModel.cs
+﻿// Plik: ViewModels/PreviewChangesViewModel.cs
+using CosplayManager.Models;
 using CosplayManager.Services;
 using CosplayManager.ViewModels.Base;
 using System;
@@ -6,18 +7,16 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows.Input;
-using CosplayManager.Models;
 
 namespace CosplayManager.ViewModels
 {
-    public class PreviewChangesViewModel : ObservableObject // Zmieniono na public
+    public class PreviewChangesViewModel : ObservableObject
     {
-        // ... (reszta kodu bez zmian, zakładając, że ProposedMoveViewModel jest public)
-        private ObservableCollection<ProposedMoveViewModel> _proposedMovesList;
-        public ObservableCollection<ProposedMoveViewModel> ProposedMovesList
+        private ObservableCollection<ProposedMoveViewModel> _proposedMoves;
+        public ObservableCollection<ProposedMoveViewModel> ProposedMoves
         {
-            get => _proposedMovesList;
-            set => SetProperty(ref _proposedMovesList, value);
+            get => _proposedMoves;
+            set => SetProperty(ref _proposedMoves, value);
         }
 
         private double _currentSimilarityThreshold;
@@ -28,95 +27,91 @@ namespace CosplayManager.ViewModels
             {
                 if (SetProperty(ref _currentSimilarityThreshold, value))
                 {
-                    ApplyThresholdAndRefresh();
+                    FilterVisibleMoves();
                 }
             }
         }
 
+        private Action<bool?>? _closeAction; // Action to close the dialog
+
+        public ICommand ApproveAllCommand { get; }
+        public ICommand DisapproveAllCommand { get; }
         public ICommand ConfirmCommand { get; }
         public ICommand CancelCommand { get; }
-        public ICommand RefreshCommand { get; }
 
-        private readonly List<Models.ProposedMove> _initialProposedMoves;
+        private List<ProposedMoveViewModel> _allMovesMasterList; // Przechowuje wszystkie ruchy, niezależnie od progu
 
-        public PreviewChangesViewModel(List<Models.ProposedMove> initialProposedMoves, double initialThreshold)
+        public PreviewChangesViewModel(List<ProposedMove> moves, double initialSimilarityThreshold)
         {
-            _initialProposedMoves = initialProposedMoves ?? new List<Models.ProposedMove>();
-            _currentSimilarityThreshold = initialThreshold;
+            _allMovesMasterList = moves.Select(m => new ProposedMoveViewModel(m)).ToList();
+            _currentSimilarityThreshold = initialSimilarityThreshold;
 
-            ProposedMovesList = new ObservableCollection<ProposedMoveViewModel>();
-            ApplyThresholdAndRefresh();
+            // Inicjalizacja ProposedMoves od razu z przefiltrowaną listą
+            ProposedMoves = new ObservableCollection<ProposedMoveViewModel>(
+                _allMovesMasterList.Where(vm => vm.Similarity >= _currentSimilarityThreshold)
+            );
 
-            ConfirmCommand = new RelayCommand(param => OnConfirm(), param => CanConfirm());
-            CancelCommand = new RelayCommand(param => OnCancel());
-            RefreshCommand = new RelayCommand(param => ApplyThresholdAndRefresh());
+            // Ładowanie miniaturek dla początkowo widocznych ruchów
+            LoadThumbnailsForVisibleMoves();
+
+            ApproveAllCommand = new RelayCommand(_ => SetAllApproved(true));
+            DisapproveAllCommand = new RelayCommand(_ => SetAllApproved(false));
+            ConfirmCommand = new RelayCommand(_ => CloseDialog(true));
+            CancelCommand = new RelayCommand(_ => CloseDialog(false));
         }
 
-        private void PopulateViewModelList(IEnumerable<Models.ProposedMove> moves)
+        public void SetCloseAction(Action<bool?> closeAction)
         {
-            ProposedMovesList.Clear();
-            if (moves != null)
+            _closeAction = closeAction;
+        }
+
+        private void CloseDialog(bool? dialogResult)
+        {
+            _closeAction?.Invoke(dialogResult);
+        }
+
+
+        private void SetAllApproved(bool approved)
+        {
+            foreach (var moveVM in ProposedMoves) // Działaj tylko na widocznych (przefiltrowanych)
             {
-                foreach (var move in moves)
-                {
-                    var vm = new ProposedMoveViewModel(move)
-                    {
-                        IsApprovedForMove = true
-                    };
-                    ProposedMovesList.Add(vm);
-                }
+                moveVM.IsApproved = approved;
             }
         }
 
-        private void ApplyThresholdAndRefresh()
+        public List<ProposedMove> GetApprovedMoves()
         {
-            SimpleFileLogger.Log($"PreviewChangesViewModel: Refreshing proposed moves with threshold {CurrentSimilarityThreshold:F2}");
-            var filteredMoves = _initialProposedMoves
-                .Where(move => move.Similarity >= CurrentSimilarityThreshold)
-                .ToList();
-            PopulateViewModelList(filteredMoves);
+            return ProposedMoves.Where(vm => vm.IsApproved).Select(vm => vm.OriginalMove).ToList();
         }
 
-        private bool CanConfirm()
+        private void FilterVisibleMoves()
         {
-            return ProposedMovesList.Any(p => p.IsApprovedForMove);
+            // Filtruj na podstawie _allMovesMasterList i aktualizuj ProposedMoves
+            var filtered = _allMovesMasterList.Where(vm => vm.Similarity >= CurrentSimilarityThreshold).ToList();
+            ProposedMoves = new ObservableCollection<ProposedMoveViewModel>(filtered);
+            LoadThumbnailsForVisibleMoves(); // Załaduj miniaturki dla nowo widocznych
+            OnPropertyChanged(nameof(ProposedMoves)); // Upewnij się, że UI się odświeży
         }
 
-        public List<Models.ProposedMove> GetApprovedMoves()
+        private async void LoadThumbnailsForVisibleMoves()
         {
-            var approvedRawMoves = new List<Models.ProposedMove>();
-            if (ProposedMovesList != null)
+            // Aby uniknąć wielokrotnego ładowania, można by dodać flagę per ViewModel,
+            // ale ImageFileEntry.LoadThumbnailAsync już ma wewnętrzną logikę
+            foreach (var moveVM in ProposedMoves)
             {
-                foreach (var vm in ProposedMovesList.Where(p => p.IsApprovedForMove))
+                if (moveVM.SourceThumbnail == null && !moveVM.IsLoadingSourceThumbnail)
                 {
-                    approvedRawMoves.Add(new Models.ProposedMove
+                    // ZMIANA NAZWY: TargetImageDisplay
+                    if (moveVM.TargetImageDisplay?.FilePath != moveVM.SourceImage.FilePath) // Nie ładuj jeśli to ten sam obraz
                     {
-                        SourceImage = vm.SourceImage,
-                        TargetImage = vm.TargetImage,
-                        ProposedTargetPath = vm.ProposedTargetPath,
-                        Similarity = vm.Similarity,
-                        Action = vm.Action,
-                        TargetCategoryProfileName = vm.TargetCategoryProfileName
-                    });
+                        await moveVM.LoadThumbnailsAsync(); // LoadThumbnailAsync jest w ProposedMoveViewModel
+                    }
+                    else if (moveVM.TargetImageDisplay == null) // Jeśli nie ma TargetImageDisplay, zawsze ładuj Source
+                    {
+                        await moveVM.LoadThumbnailsAsync();
+                    }
                 }
             }
-            SimpleFileLogger.Log($"PreviewChangesViewModel: GetApprovedMoves przygotowało {approvedRawMoves.Count} ruchów.");
-            return approvedRawMoves;
-        }
-
-
-        public Action<bool?>? CloseAction { get; set; }
-
-        private void OnConfirm()
-        {
-            SimpleFileLogger.Log("PreviewChangesViewModel: Confirm button clicked. ViewModel przekaże 'true' do CloseAction.");
-            CloseAction?.Invoke(true);
-        }
-
-        private void OnCancel()
-        {
-            SimpleFileLogger.Log("PreviewChangesViewModel: Cancel button clicked. ViewModel przekaże 'false' do CloseAction.");
-            CloseAction?.Invoke(false);
         }
     }
 }
