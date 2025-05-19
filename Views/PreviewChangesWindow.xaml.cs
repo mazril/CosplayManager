@@ -16,7 +16,7 @@ namespace CosplayManager.Views
             this.Closing += PreviewChangesWindow_Closing;
         }
 
-        // Ta metoda powinna być publiczna i wywoływana z MainWindowViewModel
+        // Metoda publiczna do ustawienia akcji zamykania z MainWindowViewModel
         public void SetViewModelCloseAction(PreviewChangesViewModel vm)
         {
             if (vm != null)
@@ -29,12 +29,12 @@ namespace CosplayManager.Views
                     {
                         // Ustawiamy DialogResult okna, co spowoduje jego zamknięcie
                         // To powinno być bezpieczne do wywołania, nawet jeśli jest już zamykane.
-                        // Sprawdź, czy okno jest nadal aktywne jako dialog
                         if (System.Windows.Interop.ComponentDispatcher.IsThreadModal && this.IsVisible)
                         {
                             Application.Current.Dispatcher.Invoke(() => this.DialogResult = dialogResult);
                         }
-                        else if (this.IsLoaded && this.IsVisible) // Jeśli nie jest modalne, ale wciąż widoczne
+                        // Jeśli nie jest modalne, ale wciąż widoczne, spróbuj zamknąć normalnie
+                        else if (this.IsLoaded && this.IsVisible)
                         {
                             Application.Current.Dispatcher.Invoke(() => this.Close());
                         }
@@ -64,7 +64,7 @@ namespace CosplayManager.Views
 
             if (this.DataContext is PreviewChangesViewModel vm)
             {
-                // vm.CloseAction = null; // Można rozważyć, aby uniknąć wycieków, jeśli VM żyje dłużej niż okno
+                // vm.CloseAction = null; // Opcjonalnie, aby zerwać referencję
             }
             this.DataContext = null;
             SimpleFileLogger.Log("PreviewChangesWindow.PrepareToCloseWindowResources: DataContext okna ustawiony na null.");
