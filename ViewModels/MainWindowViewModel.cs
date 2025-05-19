@@ -35,12 +35,25 @@ namespace CosplayManager.ViewModels
         private readonly SemaphoreSlim _embeddingSemaphore = new SemaphoreSlim(MAX_CONCURRENT_EMBEDDING_REQUESTS, MAX_CONCURRENT_EMBEDDING_REQUESTS);
         private readonly object _profileChangeLock = new object();
 
-        // Klasa pomocnicza do zwracania wyników z metod przetwarzających pojedynczy obraz
         private class ProcessingResult
         {
             public int FilesWithEmbeddingsIncrement { get; set; } = 0;
             public int AutoActionsIncrement { get; set; } = 0;
             public bool ProfileDataChanged { get; set; } = false;
+        }
+
+        private bool _enableDebugLogging = false;
+        public bool EnableDebugLogging
+        {
+            get => _enableDebugLogging;
+            set
+            {
+                if (SetProperty(ref _enableDebugLogging, value))
+                {
+                    SimpleFileLogger.IsDebugLoggingEnabled = value;
+                    SimpleFileLogger.LogHighLevelInfo($"Debug logging {(value ? "enabled" : "disabled")} by user.");
+                }
+            }
         }
 
         private ObservableCollection<ModelDisplayViewModel> _hierarchicalProfilesList;
@@ -236,6 +249,9 @@ namespace CosplayManager.ViewModels
 
             CancelCurrentOperationCommand = new RelayCommand(ExecuteCancelCurrentOperation, CanExecuteCancelCurrentOperation);
             EnsureThumbnailsLoadedCommand = new AsyncRelayCommand(ExecuteEnsureThumbnailsLoadedAsync, CanExecuteEnsureThumbnailsLoaded);
+
+            // Wczytaj ustawienia i zainicjuj stan logowania debugowania
+            // Ta część została przeniesiona do InitializeAsync, aby była wołana po konstruktorze
         }
 
         private async Task RunLongOperation(Func<CancellationToken, Task> operation, string statusMessagePrefix)
@@ -257,7 +273,7 @@ namespace CosplayManager.ViewModels
 
             IsBusy = true;
             StatusMessage = $"{statusMessagePrefix}... (Można anulować)";
-            SimpleFileLogger.Log($"RunLongOperation: Rozpoczęto '{statusMessagePrefix}'. Token: {token.GetHashCode()}");
+            SimpleFileLogger.LogHighLevelInfo($"RunLongOperation: Rozpoczęto '{statusMessagePrefix}'. Token: {token.GetHashCode()}");
 
             try
             {
@@ -265,17 +281,17 @@ namespace CosplayManager.ViewModels
                 if (token.IsCancellationRequested)
                 {
                     StatusMessage = $"{statusMessagePrefix} - Anulowano.";
-                    SimpleFileLogger.Log($"RunLongOperation: Operacja '{statusMessagePrefix}' (token: {token.GetHashCode()}) anulowana przez użytkownika.");
+                    SimpleFileLogger.LogHighLevelInfo($"RunLongOperation: Operacja '{statusMessagePrefix}' (token: {token.GetHashCode()}) anulowana przez użytkownika.");
                 }
                 else
                 {
-                    SimpleFileLogger.Log($"RunLongOperation: Operacja '{statusMessagePrefix}' (token: {token.GetHashCode()}) zakończona (lub przerwana wewnętrznie).");
+                    SimpleFileLogger.LogHighLevelInfo($"RunLongOperation: Operacja '{statusMessagePrefix}' (token: {token.GetHashCode()}) zakończona (lub przerwana wewnętrznie).");
                 }
             }
             catch (OperationCanceledException)
             {
                 StatusMessage = $"{statusMessagePrefix} - Anulowano.";
-                SimpleFileLogger.Log($"RunLongOperation: Operacja '{statusMessagePrefix}' (token: {token.GetHashCode()}) anulowana (OperationCanceledException).");
+                SimpleFileLogger.LogHighLevelInfo($"RunLongOperation: Operacja '{statusMessagePrefix}' (token: {token.GetHashCode()}) anulowana (OperationCanceledException).");
             }
             catch (Exception ex)
             {
@@ -304,7 +320,7 @@ namespace CosplayManager.ViewModels
                 {
                     StatusMessage = $"{statusMessagePrefix} - Zakończono.";
                 }
-                SimpleFileLogger.Log($"RunLongOperation: Zakończono (finally) dla '{statusMessagePrefix}' (token: {token.GetHashCode()}). Aktualny StatusMessage: {StatusMessage}");
+                SimpleFileLogger.LogHighLevelInfo($"RunLongOperation: Zakończono (finally) dla '{statusMessagePrefix}' (token: {token.GetHashCode()}). Aktualny StatusMessage: {StatusMessage}");
             }
         }
 
@@ -390,7 +406,7 @@ namespace CosplayManager.ViewModels
 
         private void ClearModelSpecificSuggestionsCache()
         {
-            SimpleFileLogger.Log("ClearModelSpecificSuggestionsCache: Czyszczenie cache sugestii.");
+            SimpleFileLogger.LogHighLevelInfo("ClearModelSpecificSuggestionsCache: Czyszczenie cache sugestii.");
             _lastModelSpecificSuggestions.Clear();
             _lastScannedModelNameForSuggestions = "__CACHE_CLEARED__";
             RefreshPendingSuggestionCountsFromCache();
@@ -400,7 +416,8 @@ namespace CosplayManager.ViewModels
         {
             LibraryRootPath = this.LibraryRootPath,
             SourceFolderNamesInput = this.SourceFolderNamesInput,
-            SuggestionSimilarityThreshold = this.SuggestionSimilarityThreshold
+            SuggestionSimilarityThreshold = this.SuggestionSimilarityThreshold,
+            EnableDebugLogging = this.EnableDebugLogging // <-- ZAPIS USTAWIENIA
         };
 
         private void ApplySettings(UserSettings settings)
@@ -409,7 +426,9 @@ namespace CosplayManager.ViewModels
             LibraryRootPath = settings.LibraryRootPath;
             SourceFolderNamesInput = settings.SourceFolderNamesInput;
             SuggestionSimilarityThreshold = settings.SuggestionSimilarityThreshold;
-            SimpleFileLogger.Log("Zastosowano wczytane ustawienia.");
+            EnableDebugLogging = settings.EnableDebugLogging; // <-- ODCZYT USTAWIENIA I AKTUALIZACJA SimpleFileLogger
+            SimpleFileLogger.IsDebugLoggingEnabled = this.EnableDebugLogging;
+            SimpleFileLogger.LogHighLevelInfo($"Zastosowano wczytane ustawienia. Debug logging: {(EnableDebugLogging ? "Enabled" : "Disabled")}.");
         }
 
         private Task ExecuteSaveAppSettingsAsync(object? parameter = null) =>
@@ -418,14 +437,14 @@ namespace CosplayManager.ViewModels
                 token.ThrowIfCancellationRequested();
                 await _settingsService.SaveSettingsAsync(GetCurrentSettings());
                 StatusMessage = "Ustawienia aplikacji zapisane.";
-                SimpleFileLogger.Log("Ustawienia aplikacji zapisane (na żądanie).");
+                SimpleFileLogger.LogHighLevelInfo("Ustawienia aplikacji zapisane (na żądanie).");
             }, "Zapisywanie ustawień aplikacji");
 
         public Task InitializeAsync() =>
             RunLongOperation(async token =>
             {
-                SimpleFileLogger.Log("ViewModel: InitializeAsync start.");
-                ApplySettings(await _settingsService.LoadSettingsAsync());
+                SimpleFileLogger.LogHighLevelInfo("ViewModel: InitializeAsync start.");
+                ApplySettings(await _settingsService.LoadSettingsAsync()); // ApplySettings ustawi SimpleFileLogger.IsDebugLoggingEnabled
                 token.ThrowIfCancellationRequested();
                 await InternalExecuteLoadProfilesAsync(token);
                 token.ThrowIfCancellationRequested();
@@ -433,12 +452,12 @@ namespace CosplayManager.ViewModels
                 if (string.IsNullOrEmpty(LibraryRootPath)) StatusMessage = "Gotowy. Wybierz folder biblioteki.";
                 else if (!Directory.Exists(LibraryRootPath)) StatusMessage = $"Uwaga: Folder biblioteki '{LibraryRootPath}' nie istnieje.";
                 else StatusMessage = "Gotowy.";
-                SimpleFileLogger.Log("ViewModel: InitializeAsync koniec.");
+                SimpleFileLogger.LogHighLevelInfo("ViewModel: InitializeAsync koniec.");
             }, "Inicjalizacja aplikacji");
 
         public async Task OnAppClosingAsync()
         {
-            SimpleFileLogger.Log("ViewModel: OnAppClosingAsync - Anulowanie operacji i zapis ustawień...");
+            SimpleFileLogger.LogHighLevelInfo("ViewModel: OnAppClosingAsync - Anulowanie operacji i zapis ustawień...");
             if (_activeLongOperationCts != null && !_activeLongOperationCts.IsCancellationRequested)
             {
                 _activeLongOperationCts.Cancel();
@@ -451,7 +470,7 @@ namespace CosplayManager.ViewModels
                 _activeLongOperationCts = null;
             }
             await _settingsService.SaveSettingsAsync(GetCurrentSettings());
-            SimpleFileLogger.Log("ViewModel: OnAppClosingAsync - Ustawienia zapisane.");
+            SimpleFileLogger.LogHighLevelInfo("ViewModel: OnAppClosingAsync - Ustawienia zapisane.");
         }
 
         private bool CanExecuteLoadProfiles(object? arg) => !IsBusy;
@@ -515,7 +534,7 @@ namespace CosplayManager.ViewModels
 
         private async Task InternalExecuteLoadProfilesAsync(CancellationToken token)
         {
-            SimpleFileLogger.Log($"InternalExecuteLoadProfilesAsync. RefreshFlag: {_isRefreshingProfilesPostMove}. Token: {token.GetHashCode()}");
+            SimpleFileLogger.LogHighLevelInfo($"InternalExecuteLoadProfilesAsync. RefreshFlag: {_isRefreshingProfilesPostMove}. Token: {token.GetHashCode()}");
             if (!_isRefreshingProfilesPostMove)
             {
             }
@@ -543,7 +562,7 @@ namespace CosplayManager.ViewModels
                     }
                 }
                 StatusMessage = $"Załadowano {HierarchicalProfilesList.Sum(m => m.CharacterProfiles.Count)} profili dla {HierarchicalProfilesList.Count} modelek.";
-                SimpleFileLogger.Log($"Wątek UI: Załadowano profile. Status: {StatusMessage}");
+                SimpleFileLogger.LogHighLevelInfo($"Wątek UI: Załadowano profile. Status: {StatusMessage}");
 
                 if (!string.IsNullOrEmpty(prevSelectedName))
                 {
@@ -576,7 +595,7 @@ namespace CosplayManager.ViewModels
                     return;
                 }
                 string catName = CurrentProfileNameForEdit;
-                SimpleFileLogger.Log($"Generowanie profilu '{catName}' ({ImageFiles.Count} obr.). Token: {token.GetHashCode()}");
+                SimpleFileLogger.LogHighLevelInfo($"Generowanie profilu '{catName}' ({ImageFiles.Count} obr.). Token: {token.GetHashCode()}");
 
                 List<ImageFileEntry> entriesToProcess = new List<ImageFileEntry>();
                 foreach (var file in ImageFiles)
@@ -625,7 +644,7 @@ namespace CosplayManager.ViewModels
         private Task ExecuteSaveAllProfilesAsync(object? parameter = null) =>
            RunLongOperation(async token =>
            {
-               SimpleFileLogger.Log($"Zapis wszystkich profili. Token: {token.GetHashCode()}");
+               SimpleFileLogger.LogHighLevelInfo($"Zapis wszystkich profili. Token: {token.GetHashCode()}");
                await _profileService.SaveAllProfilesAsync();
                token.ThrowIfCancellationRequested();
                StatusMessage = "Wszystkie profile i cache embeddingów zapisane.";
@@ -642,7 +661,7 @@ namespace CosplayManager.ViewModels
                 if (MessageBox.Show($"Czy na pewno chcesz usunąć profil '{profileToRemove.CategoryName}'?\nTa operacja usunie tylko definicję profilu, nie pliki graficzne z dysku.", "Potwierdź usunięcie profilu", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
                 {
                     string name = profileToRemove.CategoryName;
-                    SimpleFileLogger.Log($"Usuwanie profilu '{name}'. Token: {token.GetHashCode()}");
+                    SimpleFileLogger.LogHighLevelInfo($"Usuwanie profilu '{name}'. Token: {token.GetHashCode()}");
                     if (await _profileService.RemoveProfileAsync(name))
                     {
                         StatusMessage = $"Profil '{name}' usunięty.";
@@ -734,7 +753,7 @@ namespace CosplayManager.ViewModels
         private Task ExecuteAutoCreateProfilesAsync(object? parameter) =>
         RunLongOperation(async token =>
         {
-            SimpleFileLogger.Log($"AutoCreateProfiles: Rozpoczęto skanowanie folderu biblioteki: {LibraryRootPath}. Token: {token.GetHashCode()}");
+            SimpleFileLogger.LogHighLevelInfo($"AutoCreateProfiles: Rozpoczęto skanowanie folderu biblioteki: {LibraryRootPath}. Token: {token.GetHashCode()}");
             var mixedFoldersToIgnore = new HashSet<string>(SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()), StringComparer.OrdinalIgnoreCase);
             token.ThrowIfCancellationRequested();
 
@@ -1095,7 +1114,7 @@ namespace CosplayManager.ViewModels
             RunLongOperation(async token =>
             {
                 if (!(parameter is ModelDisplayViewModel modelVM)) { StatusMessage = "Błąd: Nie wybrano modelki."; MessageBox.Show(StatusMessage, "Błąd Wyboru", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
-                SimpleFileLogger.Log($"MatchModelSpecific dla '{modelVM.ModelName}'. Token: {token.GetHashCode()}");
+                SimpleFileLogger.LogHighLevelInfo($"MatchModelSpecific dla '{modelVM.ModelName}'. Token: {token.GetHashCode()}");
                 var mixedFolders = new HashSet<string>(SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()), StringComparer.OrdinalIgnoreCase);
                 if (!mixedFolders.Any()) { StatusMessage = "Błąd: Zdefiniuj foldery źródłowe."; MessageBox.Show(StatusMessage, "Brak Folderów Źródłowych", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
 
@@ -1147,7 +1166,7 @@ namespace CosplayManager.ViewModels
                 }
 
                 var movesForSuggestionWindow = movesForSuggestionWindowConcurrent.ToList();
-                SimpleFileLogger.Log($"MatchModelSpecific dla '{modelVM.ModelName}': Podsumowanie - Znaleziono: {filesFoundInMix}, Z embeddingami: {currentFilesWithEmbeddings}. Akcje auto: {currentAutoActionsCount}. Sugestie: {movesForSuggestionWindow.Count}. Profile zmodyfikowane: {currentAnyProfileDataChanged}");
+                SimpleFileLogger.LogHighLevelInfo($"MatchModelSpecific dla '{modelVM.ModelName}': Podsumowanie - Znaleziono: {filesFoundInMix}, Z embeddingami: {currentFilesWithEmbeddings}. Akcje auto: {currentAutoActionsCount}. Sugestie: {movesForSuggestionWindow.Count}. Profile zmodyfikowane: {currentAnyProfileDataChanged}");
 
                 _lastModelSpecificSuggestions = new List<Models.ProposedMove>(movesForSuggestionWindow);
                 _lastScannedModelNameForSuggestions = modelVM.ModelName;
@@ -1176,7 +1195,7 @@ namespace CosplayManager.ViewModels
 
                 if (currentAnyProfileDataChanged)
                 {
-                    SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Zmiany w profilach dla '{modelVM.ModelName}'. Odświeżanie.");
+                    SimpleFileLogger.LogHighLevelInfo($"ExecuteMatchModelSpecificAsync: Zmiany w profilach dla '{modelVM.ModelName}'. Odświeżanie.");
                     _isRefreshingProfilesPostMove = true;
                     await InternalExecuteLoadProfilesAsync(token);
                     _isRefreshingProfilesPostMove = false;
@@ -1285,7 +1304,7 @@ namespace CosplayManager.ViewModels
                         SimpleFileLogger.Log($"ExecuteSuggestImagesAsync: Pomijanie modelki '{modelVM.ModelName}' - folder nie istnieje lub brak profili postaci.");
                         continue;
                     }
-                    SimpleFileLogger.Log($"ExecuteSuggestImagesAsync (Global Scan): Rozpoczynanie przetwarzania dla modelki '{modelVM.ModelName}'.");
+                    SimpleFileLogger.LogHighLevelInfo($"ExecuteSuggestImagesAsync (Global Scan): Rozpoczynanie przetwarzania dla modelki '{modelVM.ModelName}'.");
 
                     foreach (var mixFolderName in mixedFolders)
                     {
@@ -1321,7 +1340,7 @@ namespace CosplayManager.ViewModels
                 }
 
                 var allCollectedSuggestionsGlobal = allCollectedSuggestionsGlobalConcurrent.ToList();
-                SimpleFileLogger.Log($"ExecuteSuggestImagesAsync: Podsumowanie globalne - Znaleziono: {totalFilesFound}, Z embeddingami: {currentTotalFilesWithEmbeddings}, Akcje auto: {currentTotalAutoActions}, Sugestie zebrane: {allCollectedSuggestionsGlobal.Count}. Profile zmodyfikowane: {currentAnyProfileDataChanged}");
+                SimpleFileLogger.LogHighLevelInfo($"ExecuteSuggestImagesAsync: Podsumowanie globalne - Znaleziono: {totalFilesFound}, Z embeddingami: {currentTotalFilesWithEmbeddings}, Akcje auto: {currentTotalAutoActions}, Sugestie zebrane: {allCollectedSuggestionsGlobal.Count}. Profile zmodyfikowane: {currentAnyProfileDataChanged}");
 
                 _lastModelSpecificSuggestions = new List<Models.ProposedMove>(allCollectedSuggestionsGlobal);
                 _lastScannedModelNameForSuggestions = null;
@@ -1330,7 +1349,7 @@ namespace CosplayManager.ViewModels
 
                 if (currentAnyProfileDataChanged)
                 {
-                    SimpleFileLogger.Log($"ExecuteSuggestImagesAsync: Wykryto zmiany w profilach podczas globalnego skanowania. Odświeżanie widoku UI.");
+                    SimpleFileLogger.LogHighLevelInfo($"ExecuteSuggestImagesAsync: Wykryto zmiany w profilach podczas globalnego skanowania. Odświeżanie widoku UI.");
                     _isRefreshingProfilesPostMove = true;
                     await InternalExecuteLoadProfilesAsync(token);
                     _isRefreshingProfilesPostMove = false;
@@ -1424,7 +1443,7 @@ namespace CosplayManager.ViewModels
                 var charProfileForSuggestions = (parameter as CategoryProfile) ?? SelectedProfile;
                 if (charProfileForSuggestions == null) { StatusMessage = "Błąd: Wybierz profil postaci."; MessageBox.Show(StatusMessage, "Brak Wyboru Postaci", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
 
-                SimpleFileLogger.Log($"CheckCharacterSuggestions dla '{charProfileForSuggestions.CategoryName}'. Token: {token.GetHashCode()}");
+                SimpleFileLogger.LogHighLevelInfo($"CheckCharacterSuggestions dla '{charProfileForSuggestions.CategoryName}'. Token: {token.GetHashCode()}");
                 token.ThrowIfCancellationRequested();
                 string modelName = _profileService.GetModelNameFromCategory(charProfileForSuggestions.CategoryName);
                 var modelVM = HierarchicalProfilesList.FirstOrDefault(m => m.ModelName.Equals(modelName, StringComparison.OrdinalIgnoreCase));
@@ -1481,7 +1500,7 @@ namespace CosplayManager.ViewModels
 
                 if (anyProfileDataChangedDuringEntireOperation)
                 {
-                    SimpleFileLogger.Log($"CheckCharacterSuggestionsAsync: Zmiany w profilach dla '{charProfileForSuggestions.CategoryName}'. Odświeżanie.");
+                    SimpleFileLogger.LogHighLevelInfo($"CheckCharacterSuggestionsAsync: Zmiany w profilach dla '{charProfileForSuggestions.CategoryName}'. Odświeżanie.");
                     _isRefreshingProfilesPostMove = true;
                     await InternalExecuteLoadProfilesAsync(token);
                     _isRefreshingProfilesPostMove = false;
@@ -1800,7 +1819,7 @@ namespace CosplayManager.ViewModels
                 token.ThrowIfCancellationRequested();
                 if (dialogResult == true && splitVM != null)
                 {
-                    StatusMessage = $"Dzielenie '{originalCharacterProfile.CategoryName}'..."; SimpleFileLogger.Log($"SplitProfile: Potwierdzono dla '{originalCharacterProfile.CategoryName}'. Nowe: '{splitVM.NewProfile1Name}', '{splitVM.NewProfile2Name}'.");
+                    StatusMessage = $"Dzielenie '{originalCharacterProfile.CategoryName}'..."; SimpleFileLogger.LogHighLevelInfo($"SplitProfile: Potwierdzono dla '{originalCharacterProfile.CategoryName}'. Nowe: '{splitVM.NewProfile1Name}', '{splitVM.NewProfile2Name}'.");
                     string fullNewProfile1Name = $"{modelName} - {splitVM.NewProfile1Name}"; string fullNewProfile2Name = $"{modelName} - {splitVM.NewProfile2Name}";
                     var entriesForProfile1 = splitVM.Group1Images.Select(vmItem => vmItem.OriginalImageEntry).ToList(); var entriesForProfile2 = splitVM.Group2Images.Select(vmItem => vmItem.OriginalImageEntry).ToList();
                     string newProfile1Path = Path.Combine(LibraryRootPath, SanitizeFolderName(modelName), SanitizeFolderName(splitVM.NewProfile1Name)); string newProfile2Path = Path.Combine(LibraryRootPath, SanitizeFolderName(modelName), SanitizeFolderName(splitVM.NewProfile2Name));
@@ -1808,9 +1827,9 @@ namespace CosplayManager.ViewModels
                     foreach (var entry in entriesForProfile1) { token.ThrowIfCancellationRequested(); string newFilePath = Path.Combine(newProfile1Path, entry.FileName); try { if (!File.Exists(newFilePath) && File.Exists(entry.FilePath)) File.Move(entry.FilePath, newFilePath); if (File.Exists(newFilePath)) entry.FilePath = newFilePath; } catch (Exception ex) { SimpleFileLogger.LogError($"SplitProfile: Błąd przenoszenia '{entry.FilePath}' do '{newFilePath}'", ex); } }
                     foreach (var entry in entriesForProfile2) { token.ThrowIfCancellationRequested(); string newFilePath = Path.Combine(newProfile2Path, entry.FileName); try { if (!File.Exists(newFilePath) && File.Exists(entry.FilePath)) File.Move(entry.FilePath, newFilePath); if (File.Exists(newFilePath)) entry.FilePath = newFilePath; } catch (Exception ex) { SimpleFileLogger.LogError($"SplitProfile: Błąd przenoszenia '{entry.FilePath}' do '{newFilePath}'", ex); } }
                     SimpleFileLogger.Log($"SplitProfile: Przeniesiono pliki.");
-                    await _profileService.GenerateProfileAsync(fullNewProfile1Name, entriesForProfile1); SimpleFileLogger.Log($"SplitProfile: Profil '{fullNewProfile1Name}'."); token.ThrowIfCancellationRequested();
-                    await _profileService.GenerateProfileAsync(fullNewProfile2Name, entriesForProfile2); SimpleFileLogger.Log($"SplitProfile: Profil '{fullNewProfile2Name}'."); token.ThrowIfCancellationRequested();
-                    await _profileService.RemoveProfileAsync(originalCharacterProfile.CategoryName); SimpleFileLogger.Log($"SplitProfile: Usunięto stary profil '{originalCharacterProfile.CategoryName}'."); dataChanged = true;
+                    await _profileService.GenerateProfileAsync(fullNewProfile1Name, entriesForProfile1); SimpleFileLogger.LogHighLevelInfo($"SplitProfile: Profil '{fullNewProfile1Name}'."); token.ThrowIfCancellationRequested();
+                    await _profileService.GenerateProfileAsync(fullNewProfile2Name, entriesForProfile2); SimpleFileLogger.LogHighLevelInfo($"SplitProfile: Profil '{fullNewProfile2Name}'."); token.ThrowIfCancellationRequested();
+                    await _profileService.RemoveProfileAsync(originalCharacterProfile.CategoryName); SimpleFileLogger.LogHighLevelInfo($"SplitProfile: Usunięto stary profil '{originalCharacterProfile.CategoryName}'."); dataChanged = true;
                     StatusMessage = $"Profil '{originalCharacterProfile.CategoryName}' podzielony na '{fullNewProfile1Name}' i '{fullNewProfile2Name}'."; var uiProfile = HierarchicalProfilesList.SelectMany(m => m.CharacterProfiles).FirstOrDefault(p => p.CategoryName == originalCharacterProfile.CategoryName); if (uiProfile != null) uiProfile.HasSplitSuggestion = false;
                 }
                 else { StatusMessage = $"Podział '{originalCharacterProfile.CategoryName}' anulowany."; }
@@ -1819,10 +1838,10 @@ namespace CosplayManager.ViewModels
 
         private void ExecuteCancelCurrentOperation(object? parameter)
         {
-            SimpleFileLogger.Log($"ExecuteCancelCurrentOperation. CTS: {_activeLongOperationCts != null}. Token: {_activeLongOperationCts?.Token.GetHashCode()}");
+            SimpleFileLogger.LogHighLevelInfo($"ExecuteCancelCurrentOperation. CTS: {_activeLongOperationCts != null}. Token: {_activeLongOperationCts?.Token.GetHashCode()}");
             if (_activeLongOperationCts != null && !_activeLongOperationCts.IsCancellationRequested)
             {
-                _activeLongOperationCts.Cancel(); StatusMessage = "Anulowanie operacji..."; SimpleFileLogger.Log("Sygnał anulowania wysłany.");
+                _activeLongOperationCts.Cancel(); StatusMessage = "Anulowanie operacji..."; SimpleFileLogger.LogHighLevelInfo("Sygnał anulowania wysłany.");
             }
             else SimpleFileLogger.Log("Brak operacji do anulowania lub już anulowano.");
         }
@@ -1833,7 +1852,7 @@ namespace CosplayManager.ViewModels
                 var imagesToLoadThumbs = (parameter as IEnumerable<ImageFileEntry>)?.ToList() ?? ImageFiles.ToList();
                 if (!imagesToLoadThumbs.Any()) { StatusMessage = "Brak obrazów do załadowania miniaturek."; return; }
 
-                SimpleFileLogger.Log($"EnsureThumbnailsLoaded: Ładowanie dla {imagesToLoadThumbs.Count} obrazów. Token: {token.GetHashCode()}");
+                SimpleFileLogger.LogHighLevelInfo($"EnsureThumbnailsLoaded: Ładowanie dla {imagesToLoadThumbs.Count} obrazów. Token: {token.GetHashCode()}");
 
                 var tasks = new List<Task>();
                 using var thumbnailSemaphore = new SemaphoreSlim(10, 10);
@@ -1862,19 +1881,19 @@ namespace CosplayManager.ViewModels
                 token.ThrowIfCancellationRequested();
                 int loadedCount = imagesToLoadThumbs.Count(img => img.Thumbnail != null);
                 StatusMessage = $"Załadowano {loadedCount} z {imagesToLoadThumbs.Count} miniaturek (poproszono o {tasks.Count}).";
-                SimpleFileLogger.Log(StatusMessage);
+                SimpleFileLogger.LogHighLevelInfo(StatusMessage);
             }, "Ładowanie miniaturek");
 
         private Task ExecuteRemoveDuplicatesInModelAsync(object? parameter) =>
             RunLongOperation(async token =>
             {
-                SimpleFileLogger.Log($"[ExecuteRemoveDuplicatesInModelAsync] Parameter: {parameter?.GetType().FullName ?? "null"}");
+                SimpleFileLogger.LogHighLevelInfo($"[ExecuteRemoveDuplicatesInModelAsync] Parameter: {parameter?.GetType().FullName ?? "null"}");
                 if (!(parameter is ModelDisplayViewModel modelVM)) { StatusMessage = "Błąd: Nieprawidłowy parametr."; SimpleFileLogger.LogWarning(StatusMessage); return; }
                 string modelName = modelVM.ModelName;
                 if (MessageBox.Show($"Czy na pewno usunąć duplikaty dla '{modelName}' (pozostawiając najlepszą jakość)?\nSpowoduje to usunięcie plików z dysku.", "Potwierdź", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-                { StatusMessage = "Usuwanie duplikatów anulowane."; SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Anulowano dla: {modelName}."); return; }
+                { StatusMessage = "Usuwanie duplikatów anulowane."; SimpleFileLogger.LogHighLevelInfo($"[RemoveDuplicatesInModel] Anulowano dla: {modelName}."); return; }
 
-                StatusMessage = $"Usuwanie duplikatów dla: {modelName}..."; SimpleFileLogger.Log($"[RemoveDuplicatesInModel] Rozpoczęto dla: {modelName}. Token: {token.GetHashCode()}");
+                StatusMessage = $"Usuwanie duplikatów dla: {modelName}..."; SimpleFileLogger.LogHighLevelInfo($"[RemoveDuplicatesInModel] Rozpoczęto dla: {modelName}. Token: {token.GetHashCode()}");
                 long totalDuplicatesRemovedSystemWide = 0;
                 bool anyProfileDataActuallyChangedDuringThisOperation = false;
                 var characterProfilesSnapshot = modelVM.CharacterProfiles.ToList();
@@ -1915,7 +1934,7 @@ namespace CosplayManager.ViewModels
                         if (duplicateGroupForCurrentImage.Count > 1) { ImageFileEntry bestImageInGroup = duplicateGroupForCurrentImage.First(); foreach (var imageInGroup in duplicateGroupForCurrentImage.Skip(1)) if (IsImageBetter(imageInGroup, bestImageInGroup)) bestImageInGroup = imageInGroup; foreach (var imageInGroup in duplicateGroupForCurrentImage) { if (!imageInGroup.FilePath.Equals(bestImageInGroup.FilePath, StringComparison.OrdinalIgnoreCase)) { filesToRemovePaths.Add(imageInGroup.FilePath); SimpleFileLogger.Log($"[RDIM] Oznaczono duplikat: '{imageInGroup.FilePath}' (lepszy: '{bestImageInGroup.FilePath}') w '{characterProfile.CategoryName}'."); } processedInThisProfileForDuplicates.Add(imageInGroup.FilePath); } } else processedInThisProfileForDuplicates.Add(currentImage.FilePath);
                     }
                     token.ThrowIfCancellationRequested();
-                    if (filesToRemovePaths.Any()) { SimpleFileLogger.Log($"[RDIM] Profil '{characterProfile.CategoryName}': {filesToRemovePaths.Count} duplikatów do usunięcia."); long removedThisProfileCount = 0; foreach (var pathToRemoveLoopVar in filesToRemovePaths) { token.ThrowIfCancellationRequested(); try { if (File.Exists(pathToRemoveLoopVar)) { File.Delete(pathToRemoveLoopVar); SimpleFileLogger.Log($"[RDIM] Usunięto: {pathToRemoveLoopVar}"); Interlocked.Increment(ref totalDuplicatesRemovedSystemWide); removedThisProfileCount++; } } catch (Exception ex) { SimpleFileLogger.LogError($"[RDIM] Błąd usuwania '{pathToRemoveLoopVar}'.", ex); } } var keptImageEntries = validImageEntriesList.Where(e => !filesToRemovePaths.Contains(e.FilePath)).ToList(); await _profileService.GenerateProfileAsync(characterProfile.CategoryName, keptImageEntries); lock (_profileChangeLock) { anyProfileDataActuallyChangedDuringThisOperation = true; } SimpleFileLogger.Log($"[RDIM] Profil '{characterProfile.CategoryName}' zaktualizowany. Usunięto {removedThisProfileCount}. Pozostało: {keptImageEntries.Count}."); } else if (profileHadMissingFiles) { SimpleFileLogger.Log($"[RDIM] '{characterProfile.CategoryName}' bez duplikatów, ale z brakującymi plikami."); var validEntries = validImageEntriesList.Where(e => File.Exists(e.FilePath)).ToList(); await _profileService.GenerateProfileAsync(characterProfile.CategoryName, validEntries); lock (_profileChangeLock) { anyProfileDataActuallyChangedDuringThisOperation = true; } } else SimpleFileLogger.Log($"[RDIM] Profil '{characterProfile.CategoryName}': Brak duplikatów.");
+                    if (filesToRemovePaths.Any()) { SimpleFileLogger.LogHighLevelInfo($"[RDIM] Profil '{characterProfile.CategoryName}': {filesToRemovePaths.Count} duplikatów do usunięcia."); long removedThisProfileCount = 0; foreach (var pathToRemoveLoopVar in filesToRemovePaths) { token.ThrowIfCancellationRequested(); try { if (File.Exists(pathToRemoveLoopVar)) { File.Delete(pathToRemoveLoopVar); SimpleFileLogger.LogHighLevelInfo($"[RDIM] Usunięto: {pathToRemoveLoopVar}"); Interlocked.Increment(ref totalDuplicatesRemovedSystemWide); removedThisProfileCount++; } } catch (Exception ex) { SimpleFileLogger.LogError($"[RDIM] Błąd usuwania '{pathToRemoveLoopVar}'.", ex); } } var keptImageEntries = validImageEntriesList.Where(e => !filesToRemovePaths.Contains(e.FilePath)).ToList(); await _profileService.GenerateProfileAsync(characterProfile.CategoryName, keptImageEntries); lock (_profileChangeLock) { anyProfileDataActuallyChangedDuringThisOperation = true; } SimpleFileLogger.LogHighLevelInfo($"[RDIM] Profil '{characterProfile.CategoryName}' zaktualizowany. Usunięto {removedThisProfileCount}. Pozostało: {keptImageEntries.Count}."); } else if (profileHadMissingFiles) { SimpleFileLogger.Log($"[RDIM] '{characterProfile.CategoryName}' bez duplikatów, ale z brakującymi plikami."); var validEntries = validImageEntriesList.Where(e => File.Exists(e.FilePath)).ToList(); await _profileService.GenerateProfileAsync(characterProfile.CategoryName, validEntries); lock (_profileChangeLock) { anyProfileDataActuallyChangedDuringThisOperation = true; } } else SimpleFileLogger.Log($"[RDIM] Profil '{characterProfile.CategoryName}': Brak duplikatów.");
                 }
                 token.ThrowIfCancellationRequested();
                 if (Interlocked.Read(ref totalDuplicatesRemovedSystemWide) > 0 || anyProfileDataActuallyChangedDuringThisOperation) { StatusMessage = $"Zakończono dla '{modelName}'. Usunięto: {Interlocked.Read(ref totalDuplicatesRemovedSystemWide)}. Odświeżanie..."; _isRefreshingProfilesPostMove = true; await InternalExecuteLoadProfilesAsync(token); _isRefreshingProfilesPostMove = false; MessageBox.Show($"Usunięto {Interlocked.Read(ref totalDuplicatesRemovedSystemWide)} duplikatów dla '{modelName}'.", "Zakończono", MessageBoxButton.OK, MessageBoxImage.Information); } else { StatusMessage = $"Brak duplikatów dla '{modelName}'."; MessageBox.Show(StatusMessage, "Zakończono", MessageBoxButton.OK, MessageBoxImage.Information); }
@@ -1924,7 +1943,7 @@ namespace CosplayManager.ViewModels
         private Task ExecuteApplyAllMatchesForModelAsync(object? parameter) =>
             RunLongOperation(async token =>
             {
-                SimpleFileLogger.Log($"[ExecuteApplyAllMatchesForModelAsync] Parameter: {parameter?.GetType().FullName ?? "null"}");
+                SimpleFileLogger.LogHighLevelInfo($"[ExecuteApplyAllMatchesForModelAsync] Parameter: {parameter?.GetType().FullName ?? "null"}");
                 if (!(parameter is ModelDisplayViewModel modelVM)) { StatusMessage = "Błąd: Nieprawidłowy parametr."; MessageBox.Show(StatusMessage, "Błąd", MessageBoxButton.OK, MessageBoxImage.Error); return; }
                 string modelName = modelVM.ModelName;
                 bool hasRelevantCachedSuggestions = (_lastScannedModelNameForSuggestions == modelName && _lastModelSpecificSuggestions.Any(m => _profileService.GetModelNameFromCategory(m.TargetCategoryProfileName) == modelName)) || (string.IsNullOrEmpty(_lastScannedModelNameForSuggestions) && _lastModelSpecificSuggestions.Any(m => _profileService.GetModelNameFromCategory(m.TargetCategoryProfileName) == modelName));
@@ -1932,8 +1951,8 @@ namespace CosplayManager.ViewModels
                 var movesToApply = _lastModelSpecificSuggestions.Where(m => m.Similarity >= SuggestionSimilarityThreshold && _profileService.GetModelNameFromCategory(m.TargetCategoryProfileName) == modelName).ToList();
                 if (!movesToApply.Any()) { StatusMessage = $"Brak sugestii (próg {SuggestionSimilarityThreshold:F2}) dla '{modelName}'."; MessageBox.Show(StatusMessage, "Brak Sugestii", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
                 if (MessageBox.Show($"Zastosować {movesToApply.Count} dopasowań dla '{modelName}'?\nSpowoduje to przeniesienie/usunięcie plików.", "Potwierdź", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-                { StatusMessage = "Anulowano."; SimpleFileLogger.Log($"[ApplyAllMatchesForModel] Anulowano dla: {modelName}."); return; }
-                StatusMessage = $"Stosowanie {movesToApply.Count} dopasowań dla: {modelName}..."; SimpleFileLogger.Log($"[ApplyAllMatchesForModel] Rozpoczęto dla: {modelName}. Ruchy: {movesToApply.Count}. Token: {token.GetHashCode()}");
+                { StatusMessage = "Anulowano."; SimpleFileLogger.LogHighLevelInfo($"[ApplyAllMatchesForModel] Anulowano dla: {modelName}."); return; }
+                StatusMessage = $"Stosowanie {movesToApply.Count} dopasowań dla: {modelName}..."; SimpleFileLogger.LogHighLevelInfo($"[ApplyAllMatchesForModel] Rozpoczęto dla: {modelName}. Ruchy: {movesToApply.Count}. Token: {token.GetHashCode()}");
                 bool anyProfileDataActuallyChanged = await InternalHandleApprovedMovesAsync(new List<Models.ProposedMove>(movesToApply), modelVM, null, token);
                 token.ThrowIfCancellationRequested();
                 if (anyProfileDataActuallyChanged) { StatusMessage = $"Zakończono dla '{modelName}'. Odświeżanie..."; _isRefreshingProfilesPostMove = true; await InternalExecuteLoadProfilesAsync(token); _isRefreshingProfilesPostMove = false; } else StatusMessage = $"Zakończono dla '{modelName}'. Brak zmian w profilach.";
