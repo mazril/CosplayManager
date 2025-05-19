@@ -19,8 +19,8 @@ namespace CosplayManager.Services
         private readonly EmbeddingCacheServiceSQLite _embeddingCacheService;
         private readonly string _profilesBaseFolderPath;
 
-        // Definicja stałej dla stopnia współbieżności pobierania embeddingów w ramach jednego profilu
-        private const int MAX_CONCURRENT_EMBEDDINGS_PER_PROFILE_GENERATION = 4;
+        // ZMIANA TESTOWA: Ograniczenie współbieżności do 1
+        private const int MAX_CONCURRENT_EMBEDDINGS_PER_PROFILE_GENERATION = 1;
 
 
         private class ModelProfilesFileContent
@@ -137,7 +137,6 @@ namespace CosplayManager.Services
                 return;
             }
 
-            // --- ZMIANY W CELU ZRÓWNOLEGLENIA POBIERANIA EMBEDDINGÓW ---
             var embeddingsWithPaths = new ConcurrentBag<(float[] Embedding, string Path)>();
             using (var localEmbeddingSemaphore = new SemaphoreSlim(MAX_CONCURRENT_EMBEDDINGS_PER_PROFILE_GENERATION))
             {
@@ -170,7 +169,6 @@ namespace CosplayManager.Services
 
             var collectedEmbeddings = embeddingsWithPaths.Select(ep => ep.Embedding).ToList();
             var collectedPaths = embeddingsWithPaths.Select(ep => ep.Path).ToList();
-            // --- KONIEC ZMIAN ---
 
 
             if (!collectedEmbeddings.Any())
