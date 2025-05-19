@@ -185,7 +185,7 @@ namespace CosplayManager.ViewModels
         public ICommand CancelCurrentOperationCommand { get; }
         public ICommand EnsureThumbnailsLoadedCommand { get; }
         public ICommand RemoveDuplicatesInModelCommand { get; }
-        public ICommand ApplyAllMatchesForModelCommand { get; } // NOWA KOMENDA
+        public ICommand ApplyAllMatchesForModelCommand { get; }
 
 
         public MainWindowViewModel(
@@ -219,7 +219,7 @@ namespace CosplayManager.ViewModels
             AnalyzeModelForSplittingCommand = new AsyncRelayCommand(ExecuteAnalyzeModelForSplittingAsync, CanExecuteAnalyzeModelForSplitting);
             OpenSplitProfileDialogCommand = new AsyncRelayCommand(ExecuteOpenSplitProfileDialogAsync, CanExecuteOpenSplitProfileDialog);
             RemoveDuplicatesInModelCommand = new AsyncRelayCommand(ExecuteRemoveDuplicatesInModelAsync, CanExecuteRemoveDuplicatesInModel);
-            ApplyAllMatchesForModelCommand = new AsyncRelayCommand(ExecuteApplyAllMatchesForModelAsync, CanExecuteApplyAllMatchesForModel); // INICJALIZACJA
+            ApplyAllMatchesForModelCommand = new AsyncRelayCommand(ExecuteApplyAllMatchesForModelAsync, CanExecuteApplyAllMatchesForModel);
 
 
             CancelCurrentOperationCommand = new RelayCommand(ExecuteCancelCurrentOperation, CanExecuteCancelCurrentOperation);
@@ -1116,7 +1116,7 @@ namespace CosplayManager.ViewModels
                 token.ThrowIfCancellationRequested();
                 int filesFoundInMix = 0, filesWithEmbeddings = 0, autoActionsCount = 0;
                 bool anyProfileDataChangedDuringEntireOperation = false;
-                var alreadySuggestedGraphicDuplicates = new List<(float[] embedding, string targetCategoryProfileName, string sourceFilePath)>();
+                var alreadySuggestedGraphicDuplicates = new List<(float[] embedding, string targetCategoryName, string sourceFilePath)>();
 
 
                 foreach (var mixFolderName in mixedFolders)
@@ -1201,7 +1201,7 @@ namespace CosplayManager.ViewModels
                                                                 anyProfileDataChangedDuringEntireOperation = true;
                                                         }
                                                     }
-                                                    catch (Exception ex) { SimpleFileLogger.LogError($"[SuggestWindowFilterCleanup] Błąd usuwania {pathToDeleteForFilter}: {ex.Message}", ex); }
+                                                    catch (Exception ex) { SimpleFileLogger.LogError($"[SuggestWindowFilterCleanup] Błąd usuwania {pathToDeleteForFilter}: {ex.Message}", ex); } // POPRAWKA: Użyj pathToDeleteForFilter
                                                     break;
                                                 }
                                             }
@@ -1372,7 +1372,7 @@ namespace CosplayManager.ViewModels
                                                     {
                                                         addThisSuggestionToWindow = false;
                                                         SimpleFileLogger.Log($"[SuggestWindowFilter-Global] Pomijanie sugestii dla '{proposedMove.SourceImage.FilePath}', graficznie identyczna sugestia (z '{existingSourcePath}') już istnieje dla '{existingTargetCat}'.");
-                                                        string pathToDeleteForFilter = proposedMove.SourceImage.FilePath;
+                                                        string pathToDeleteForFilter = proposedMove.SourceImage.FilePath; // Zadeklaruj przed try
                                                         try
                                                         {
                                                             if (File.Exists(pathToDeleteForFilter))
@@ -1383,6 +1383,7 @@ namespace CosplayManager.ViewModels
                                                                     anyProfileDataChangedDuringEntireOperation = true;
                                                             }
                                                         }
+                                                        // Użyj zadeklarowanej zmiennej w catch
                                                         catch (Exception ex) { SimpleFileLogger.LogError($"[SuggestWindowFilterCleanup-Global] Błąd usuwania {pathToDeleteForFilter}: {ex.Message}", ex); }
                                                         break;
                                                     }
@@ -1529,7 +1530,7 @@ namespace CosplayManager.ViewModels
                                                     {
                                                         addThisSuggestionToWindow = false;
                                                         SimpleFileLogger.Log($"[SuggestWindowFilter-Char] Pomijanie sugestii dla '{proposedMove.SourceImage.FilePath}', graficznie identyczna sugestia (z '{existingSourcePath}') już istnieje dla '{existingTargetCat}'.");
-                                                        string pathToDeleteForFilter = proposedMove.SourceImage.FilePath;
+                                                        string pathToDeleteForFilter = proposedMove.SourceImage.FilePath; // Zadeklaruj przed try
                                                         try
                                                         {
                                                             if (File.Exists(pathToDeleteForFilter))
@@ -1540,6 +1541,7 @@ namespace CosplayManager.ViewModels
                                                                     anyProfileDataChangedDuringEntireOperation = true;
                                                             }
                                                         }
+                                                        // Użyj zadeklarowanej zmiennej w catch
                                                         catch (Exception ex) { SimpleFileLogger.LogError($"[SuggestWindowFilterCleanup-Char] Błąd usuwania {pathToDeleteForFilter}: {ex.Message}", ex); }
                                                         break;
                                                     }
@@ -1954,7 +1956,7 @@ namespace CosplayManager.ViewModels
                 {
                     splitVM = new SplitProfileViewModel(originalCharacterProfile, group1Images, group2Images, suggestedName1, suggestedName2);
                     var splitWindow = new SplitProfileWindow { DataContext = splitVM, Owner = Application.Current.MainWindow };
-                    splitWindow.SetViewModelCloseAction(splitVM);
+                    splitWindow.SetViewModelCloseAction(splitVM); // Poprawione wywołanie
                     dialogResult = splitWindow.ShowDialog();
                 });
                 token.ThrowIfCancellationRequested();
@@ -2280,11 +2282,10 @@ namespace CosplayManager.ViewModels
                 if (_lastScannedModelNameForSuggestions != modelName || !_lastModelSpecificSuggestions.Any())
                 {
                     StatusMessage = $"Brak zapisanych sugestii do zastosowania dla modelki '{modelName}'. Najpierw uruchom 'Szukaj dopasowań dla tej modelki'.";
-                    MessageBox.Show(StatusMessage, "Brak Sugestii", MessageBoxButton.OK, MessageBoxInformation.Exclamation);
+                    MessageBox.Show(StatusMessage, "Brak Sugestii", MessageBoxButton.OK, MessageBoxImage.Exclamation);
                     return;
                 }
 
-                // Filtruj sugestie po progu podobieństwa, tak jakby to robiło okno PreviewChanges
                 var movesToApply = _lastModelSpecificSuggestions
                     .Where(m => m.Similarity >= SuggestionSimilarityThreshold)
                     .ToList();
@@ -2292,7 +2293,7 @@ namespace CosplayManager.ViewModels
                 if (!movesToApply.Any())
                 {
                     StatusMessage = $"Brak sugestii (powyżej progu {SuggestionSimilarityThreshold:F2}) do zastosowania dla modelki '{modelName}'.";
-                    MessageBox.Show(StatusMessage, "Brak Sugestii do Zastosowania", MessageBoxButton.OK, MessageBoxInformation.Exclamation);
+                    MessageBox.Show(StatusMessage, "Brak Sugestii do Zastosowania", MessageBoxButton.OK, MessageBoxImage.Exclamation);
                     return;
                 }
 
@@ -2310,7 +2311,7 @@ namespace CosplayManager.ViewModels
                 bool anyProfileDataActuallyChanged = await InternalHandleApprovedMovesAsync(movesToApply, modelVM, null, token);
                 token.ThrowIfCancellationRequested();
 
-                ClearModelSpecificSuggestionsCache(); // Wyczyść sugestie po ich zastosowaniu
+                ClearModelSpecificSuggestionsCache();
 
                 if (anyProfileDataActuallyChanged)
                 {
@@ -2323,7 +2324,7 @@ namespace CosplayManager.ViewModels
                 {
                     StatusMessage = $"Zakończono automatyczne stosowanie dopasowań dla modelki '{modelName}'. Nie wykryto zmian w profilach do odświeżenia UI.";
                 }
-                RefreshPendingSuggestionCountsFromCache(); // Odśwież liczniki w UI (powinny być 0 dla tej modelki)
+                RefreshPendingSuggestionCountsFromCache();
                 MessageBox.Show($"Zastosowano {movesToApply.Count} dopasowań dla modelki '{modelName}'.", "Zastosowano Wszystkie Dopasowania", MessageBoxButton.OK, MessageBoxImage.Information);
 
 
