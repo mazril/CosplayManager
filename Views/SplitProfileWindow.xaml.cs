@@ -1,10 +1,9 @@
 ﻿// Plik: Views/SplitProfileWindow.xaml.cs
-using CosplayManager.Services; // Dodaj, jeśli SimpleFileLogger jest używany
+using CosplayManager.Services; // Dodaj using, jeśli SimpleFileLogger jest używany
 using CosplayManager.ViewModels;
 using MahApps.Metro.Controls;
-using System; // Dodaj dla Action
+using System; // Dodaj using dla Action
 using System.Windows;
-
 
 namespace CosplayManager.Views
 {
@@ -13,10 +12,10 @@ namespace CosplayManager.Views
         public SplitProfileWindow()
         {
             InitializeComponent();
-            this.Closing += SplitProfileWindow_Closing; // Opcjonalne, jeśli potrzebujesz logiki przy zamykaniu
+            this.Closing += SplitProfileWindow_Closing;
         }
 
-        // Publiczna metoda do ustawienia akcji zamknięcia ViewModelu
+        // Metoda publiczna do ustawienia akcji zamknięcia ViewModelu
         public void SetViewModelCloseAction(SplitProfileViewModel vm)
         {
             if (vm != null)
@@ -50,10 +49,9 @@ namespace CosplayManager.Views
         private void SplitProfileWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
             SimpleFileLogger.Log($"SplitProfileWindow.Closing: Zdarzenie zamykania okna. DialogResult: {this.DialogResult}");
-            // Tutaj można dodać ewentualne czyszczenie zasobów, jeśli potrzebne
             if (this.DataContext is SplitProfileViewModel vm)
             {
-                // vm.CloseAction = null; // Rozważ, aby zapobiec wyciekom
+                // vm.CloseAction = null; // Rozważ
             }
             this.DataContext = null;
         }
