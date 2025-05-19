@@ -3,7 +3,7 @@ using CosplayManager.Models;
 using CosplayManager.Services;
 using CosplayManager.ViewModels.Base;
 using CosplayManager.Views;
-using Microsoft.Win32;
+using Microsoft.Win32; // Dla OpenFileDialog
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -14,6 +14,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
+// using Ookii.Dialogs.Wpf; // Jeśli używasz, upewnij się, że masz ten using
 
 namespace CosplayManager.ViewModels
 {
@@ -23,6 +24,8 @@ namespace CosplayManager.ViewModels
         private readonly FileScannerService _fileScannerService;
         private readonly ImageMetadataService _imageMetadataService;
         private readonly SettingsService _settingsService;
+        // EmbeddingCacheServiceSQLite nie jest bezpośrednio używany przez ViewModel,
+        // ale przez ProfileService, więc nie ma tu pola dla niego.
 
         private List<Models.ProposedMove> _lastModelSpecificSuggestions = new List<Models.ProposedMove>();
         private string? _lastScannedModelNameForSuggestions;
@@ -249,9 +252,6 @@ namespace CosplayManager.ViewModels
 
             CancelCurrentOperationCommand = new RelayCommand(ExecuteCancelCurrentOperation, CanExecuteCancelCurrentOperation);
             EnsureThumbnailsLoadedCommand = new AsyncRelayCommand(ExecuteEnsureThumbnailsLoadedAsync, CanExecuteEnsureThumbnailsLoaded);
-
-            // Wczytaj ustawienia i zainicjuj stan logowania debugowania
-            // Ta część została przeniesiona do InitializeAsync, aby była wołana po konstruktorze
         }
 
         private async Task RunLongOperation(Func<CancellationToken, Task> operation, string statusMessagePrefix)
@@ -417,7 +417,7 @@ namespace CosplayManager.ViewModels
             LibraryRootPath = this.LibraryRootPath,
             SourceFolderNamesInput = this.SourceFolderNamesInput,
             SuggestionSimilarityThreshold = this.SuggestionSimilarityThreshold,
-            EnableDebugLogging = this.EnableDebugLogging // <-- ZAPIS USTAWIENIA
+            EnableDebugLogging = this.EnableDebugLogging
         };
 
         private void ApplySettings(UserSettings settings)
@@ -426,7 +426,7 @@ namespace CosplayManager.ViewModels
             LibraryRootPath = settings.LibraryRootPath;
             SourceFolderNamesInput = settings.SourceFolderNamesInput;
             SuggestionSimilarityThreshold = settings.SuggestionSimilarityThreshold;
-            EnableDebugLogging = settings.EnableDebugLogging; // <-- ODCZYT USTAWIENIA I AKTUALIZACJA SimpleFileLogger
+            EnableDebugLogging = settings.EnableDebugLogging;
             SimpleFileLogger.IsDebugLoggingEnabled = this.EnableDebugLogging;
             SimpleFileLogger.LogHighLevelInfo($"Zastosowano wczytane ustawienia. Debug logging: {(EnableDebugLogging ? "Enabled" : "Disabled")}.");
         }
@@ -444,7 +444,7 @@ namespace CosplayManager.ViewModels
             RunLongOperation(async token =>
             {
                 SimpleFileLogger.LogHighLevelInfo("ViewModel: InitializeAsync start.");
-                ApplySettings(await _settingsService.LoadSettingsAsync()); // ApplySettings ustawi SimpleFileLogger.IsDebugLoggingEnabled
+                ApplySettings(await _settingsService.LoadSettingsAsync());
                 token.ThrowIfCancellationRequested();
                 await InternalExecuteLoadProfilesAsync(token);
                 token.ThrowIfCancellationRequested();
@@ -645,9 +645,9 @@ namespace CosplayManager.ViewModels
            RunLongOperation(async token =>
            {
                SimpleFileLogger.LogHighLevelInfo($"Zapis wszystkich profili. Token: {token.GetHashCode()}");
-               await _profileService.SaveAllProfilesAsync();
+               await _profileService.SaveAllProfilesAsync(); // To już nie zapisuje cache'u JSON
                token.ThrowIfCancellationRequested();
-               StatusMessage = "Wszystkie profile i cache embeddingów zapisane.";
+               StatusMessage = "Wszystkie profile zapisane. Cache embeddingów (SQLite) jest aktualizowany na bieżąco.";
                MessageBox.Show(StatusMessage, "Zapisano", MessageBoxButton.OK, MessageBoxImage.Information);
            }, "Zapisywanie wszystkich profili");
 
