@@ -34,16 +34,16 @@ namespace CosplayManager.ViewModels
 
         public ICommand ConfirmCommand { get; }
         public ICommand CancelCommand { get; }
-        public ICommand RefreshCommand { get; }
         public ICommand ApproveAllCommand { get; }
         public ICommand DisapproveAllCommand { get; }
+        // RefreshCommand może być zbędny, jeśli filtrowanie działa automatycznie
 
         private readonly List<ProposedMoveViewModel> _allMovesMasterList;
 
-        // Publiczna właściwość do ustawienia z zewnątrz (z PreviewChangesWindow.xaml.cs)
+        // Publiczna właściwość do ustawienia z zewnątrz (z PreviewChangesWindow.xaml.cs lub SplitProfileWindow.xaml.cs)
         public Action<bool?>? CloseAction { get; set; }
 
-        private readonly List<Models.ProposedMove> _initialProposedMoves; // Dodane, aby przechowywać oryginalne dane
+        private readonly List<Models.ProposedMove> _initialProposedMoves;
 
         public PreviewChangesViewModel(List<Models.ProposedMove> initialProposedMoves, double initialThreshold)
         {
@@ -57,7 +57,6 @@ namespace CosplayManager.ViewModels
 
             ConfirmCommand = new RelayCommand(param => OnConfirm(), param => CanConfirm());
             CancelCommand = new RelayCommand(param => OnCancel());
-            RefreshCommand = new RelayCommand(param => ApplyThresholdAndRefresh());
             ApproveAllCommand = new RelayCommand(_ => SetAllApprovedOnVisible(true));
             DisapproveAllCommand = new RelayCommand(_ => SetAllApprovedOnVisible(false));
         }
@@ -72,6 +71,7 @@ namespace CosplayManager.ViewModels
                     ProposedMovesList.Add(vm);
                 }
             }
+            OnPropertyChanged(nameof(ProposedMovesList)); // Upewnij się, że UI wie o zmianie
         }
 
         private void ApplyThresholdAndRefresh()
@@ -81,8 +81,6 @@ namespace CosplayManager.ViewModels
                 .Where(vm => vm.Similarity >= CurrentSimilarityThreshold)
                 .ToList();
             PopulateViewModelList(filteredVMs);
-            // Miniaturki są ładowane w ProposedMoveViewModel.LoadThumbnailsAsync(),
-            // które jest wywoływane w jego konstruktorze asynchronicznie.
         }
 
         private bool CanConfirm()
