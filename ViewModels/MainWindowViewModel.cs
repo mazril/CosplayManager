@@ -5,7 +5,7 @@ using CosplayManager.ViewModels.Base;
 using CosplayManager.Views;
 using Microsoft.Win32;
 using System;
-using System.Collections.Concurrent; // Dla ConcurrentBag
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -31,11 +31,17 @@ namespace CosplayManager.ViewModels
         private const double DUPLICATE_SIMILARITY_THRESHOLD = 0.98;
         private CancellationTokenSource? _activeLongOperationCts;
 
-        // Dla wielowątkowości w ExecuteSuggestImagesAsync
-        private const int MAX_CONCURRENT_EMBEDDING_REQUESTS = 4; // Można dostosować lub przenieść do ustawień
+        private const int MAX_CONCURRENT_EMBEDDING_REQUESTS = 4;
         private readonly SemaphoreSlim _embeddingSemaphore = new SemaphoreSlim(MAX_CONCURRENT_EMBEDDING_REQUESTS, MAX_CONCURRENT_EMBEDDING_REQUESTS);
-        private readonly object _profileChangeLock = new object(); // Do synchronizacji flagi anyProfileDataChangedDuringEntireOperation
+        private readonly object _profileChangeLock = new object();
 
+        // Klasa pomocnicza do zwracania wyników z metod przetwarzających pojedynczy obraz
+        private class ProcessingResult
+        {
+            public int FilesWithEmbeddingsIncrement { get; set; } = 0;
+            public int AutoActionsIncrement { get; set; } = 0;
+            public bool ProfileDataChanged { get; set; } = false;
+        }
 
         private ObservableCollection<ModelDisplayViewModel> _hierarchicalProfilesList;
         public ObservableCollection<ModelDisplayViewModel> HierarchicalProfilesList
@@ -461,7 +467,7 @@ namespace CosplayManager.ViewModels
             if (profileToCheck == null) return false;
 
             bool hasCentroid = profileToCheck.CentroidEmbedding != null;
-            bool hasPending = profileToCheck.PendingSuggestionsCount > 0; // Sprawdź czy są oczekujące sugestie dla tego konkretnego profilu
+            bool hasPending = profileToCheck.PendingSuggestionsCount > 0;
 
             return !string.IsNullOrWhiteSpace(LibraryRootPath) && Directory.Exists(LibraryRootPath) &&
                    !string.IsNullOrWhiteSpace(SourceFolderNamesInput) && hasCentroid && hasPending;
@@ -472,7 +478,6 @@ namespace CosplayManager.ViewModels
             if (!(parameter is ModelDisplayViewModel modelVM)) return false;
             return !string.IsNullOrWhiteSpace(LibraryRootPath) && Directory.Exists(LibraryRootPath) &&
                    modelVM.HasCharacterProfiles && !string.IsNullOrWhiteSpace(SourceFolderNamesInput);
-            // Usunięto warunek && modelVM.PendingSuggestionsCount > 0, aby umożliwić skanowanie na żądanie
         }
         private bool CanExecuteRemoveModelTree(object? parameter) => !IsBusy && parameter is ModelDisplayViewModel;
         private bool CanExecuteSaveAppSettings(object? arg) => !IsBusy;
@@ -513,7 +518,6 @@ namespace CosplayManager.ViewModels
             SimpleFileLogger.Log($"InternalExecuteLoadProfilesAsync. RefreshFlag: {_isRefreshingProfilesPostMove}. Token: {token.GetHashCode()}");
             if (!_isRefreshingProfilesPostMove)
             {
-                // ClearModelSpecificSuggestionsCache(); // Nie czyść, jeśli mogą być globalne wyniki
             }
             token.ThrowIfCancellationRequested();
             string? prevSelectedName = SelectedProfile?.CategoryName;
@@ -763,7 +767,7 @@ namespace CosplayManager.ViewModels
                     int profilesChangedForThisModel = await InternalProcessDirectoryForProfileCreationAsync(
                         modelDir,
                         currentModelName,
-                        new List<string>(), // parentCharacterPathParts
+                        new List<string>(),
                         mixedFoldersToIgnore,
                         token);
                     return (profilesChangedForThisModel, profilesChangedForThisModel > 0);
@@ -876,7 +880,7 @@ namespace CosplayManager.ViewModels
                         await InternalProcessDirectoryForProfileCreationAsync(
                             subDirectoryPath,
                             modelNameForProfile,
-                            new List<string>(currentCharacterPathSegments), // Przekaż kopię listy segmentów nadrzędnych
+                            new List<string>(currentCharacterPathSegments),
                             mixedFoldersToIgnore,
                             token), token));
                 }
@@ -1103,11 +1107,11 @@ namespace CosplayManager.ViewModels
                 token.ThrowIfCancellationRequested();
 
                 long filesFoundInMix = 0;
-                long filesWithEmbeddings = 0;
-                long autoActionsCount = 0;
-                bool anyProfileDataChangedDuringEntireOperation = false;
+                long currentFilesWithEmbeddings = 0;
+                long currentAutoActionsCount = 0;
+                bool currentAnyProfileDataChanged = false;
                 var alreadySuggestedGraphicDuplicatesConcurrent = new ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)>();
-                var processingTasks = new List<Task>();
+                var processingTasks = new List<Task<ProcessingResult>>();
 
                 foreach (var mixFolderName in mixedFolders)
                 {
@@ -1116,29 +1120,34 @@ namespace CosplayManager.ViewModels
                     if (Directory.Exists(currentMixPath))
                     {
                         var imagePathsInMix = await _fileScannerService.ScanDirectoryAsync(currentMixPath);
-                        Interlocked.Add(ref filesFoundInMix, imagePathsInMix.Count);
+                        filesFoundInMix += imagePathsInMix.Count;
                         SimpleFileLogger.Log($"MatchModelSpecific: W '{currentMixPath}' znaleziono {imagePathsInMix.Count} obrazów.");
 
                         foreach (var imgPathFromMix in imagePathsInMix)
                         {
                             token.ThrowIfCancellationRequested();
-
                             processingTasks.Add(ProcessSingleImageForModelSpecificScanAsync(
                                 imgPathFromMix, modelVM, modelPath, token,
-                                movesForSuggestionWindowConcurrent,
-                                alreadySuggestedGraphicDuplicatesConcurrent,
-                                ref filesWithEmbeddings, ref autoActionsCount, ref anyProfileDataChangedDuringEntireOperation
+                                movesForSuggestionWindowConcurrent, alreadySuggestedGraphicDuplicatesConcurrent
                             ));
                         }
                     }
                     else { SimpleFileLogger.LogWarning($"MatchModelSpecific: Folder źródłowy '{currentMixPath}' nie istnieje."); }
                 }
 
-                await Task.WhenAll(processingTasks);
+                var taskResults = await Task.WhenAll(processingTasks);
                 token.ThrowIfCancellationRequested();
 
+                foreach (var result in taskResults)
+                {
+                    currentFilesWithEmbeddings += result.FilesWithEmbeddingsIncrement;
+                    currentAutoActionsCount += result.AutoActionsIncrement;
+                    if (result.ProfileDataChanged)
+                        currentAnyProfileDataChanged = true;
+                }
+
                 var movesForSuggestionWindow = movesForSuggestionWindowConcurrent.ToList();
-                SimpleFileLogger.Log($"MatchModelSpecific dla '{modelVM.ModelName}': Podsumowanie - Znaleziono: {filesFoundInMix}, Z embeddingami: {Interlocked.Read(ref filesWithEmbeddings)}. Akcje auto: {Interlocked.Read(ref autoActionsCount)}. Sugestie: {movesForSuggestionWindow.Count}. Profile zmodyfikowane: {anyProfileDataChangedDuringEntireOperation}");
+                SimpleFileLogger.Log($"MatchModelSpecific dla '{modelVM.ModelName}': Podsumowanie - Znaleziono: {filesFoundInMix}, Z embeddingami: {currentFilesWithEmbeddings}. Akcje auto: {currentAutoActionsCount}. Sugestie: {movesForSuggestionWindow.Count}. Profile zmodyfikowane: {currentAnyProfileDataChanged}");
 
                 _lastModelSpecificSuggestions = new List<Models.ProposedMove>(movesForSuggestionWindow);
                 _lastScannedModelNameForSuggestions = modelVM.ModelName;
@@ -1159,13 +1168,13 @@ namespace CosplayManager.ViewModels
                     if (dialogOutcome == true && approvedMoves.Any())
                     {
                         if (await InternalHandleApprovedMovesAsync(approvedMoves, modelVM, null, token))
-                            lock (_profileChangeLock) { anyProfileDataChangedDuringEntireOperation = true; }
+                            currentAnyProfileDataChanged = true;
                         _lastModelSpecificSuggestions.RemoveAll(sugg => movesForSuggestionWindow.Contains(sugg));
                     }
                     else if (dialogOutcome == false) StatusMessage = $"Anulowano zmiany dla '{modelVM.ModelName}'.";
                 }
 
-                if (anyProfileDataChangedDuringEntireOperation)
+                if (currentAnyProfileDataChanged)
                 {
                     SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Zmiany w profilach dla '{modelVM.ModelName}'. Odświeżanie.");
                     _isRefreshingProfilesPostMove = true;
@@ -1173,14 +1182,13 @@ namespace CosplayManager.ViewModels
                     _isRefreshingProfilesPostMove = false;
                 }
                 RefreshPendingSuggestionCountsFromCache();
-                StatusMessage = $"Dla '{modelVM.ModelName}': {Interlocked.Read(ref autoActionsCount)} akcji auto., {modelVM.PendingSuggestionsCount} sugestii.";
+                StatusMessage = $"Dla '{modelVM.ModelName}': {currentAutoActionsCount} akcji auto., {modelVM.PendingSuggestionsCount} sugestii.";
 
-
-                if (!movesForSuggestionWindow.Any() && Interlocked.Read(ref autoActionsCount) > 0 && !anyProfileDataChangedDuringEntireOperation)
+                if (!movesForSuggestionWindow.Any() && currentAutoActionsCount > 0 && !currentAnyProfileDataChanged)
                 {
-                    MessageBox.Show($"Zakończono automatyczne operacje dla '{modelVM.ModelName}'. Wykonano {Interlocked.Read(ref autoActionsCount)} akcji. Brak dodatkowych sugestii do przejrzenia.", "Operacje Automatyczne Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
+                    MessageBox.Show($"Zakończono automatyczne operacje dla '{modelVM.ModelName}'. Wykonano {currentAutoActionsCount} akcji. Brak dodatkowych sugestii do przejrzenia.", "Operacje Automatyczne Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
-                else if (!movesForSuggestionWindow.Any() && Interlocked.Read(ref autoActionsCount) == 0 && !anyProfileDataChangedDuringEntireOperation && filesFoundInMix > 0)
+                else if (!movesForSuggestionWindow.Any() && currentAutoActionsCount == 0 && !currentAnyProfileDataChanged && filesFoundInMix > 0)
                 {
                     MessageBox.Show($"Brak nowych sugestii lub automatycznych akcji dla '{modelVM.ModelName}'. Sprawdź, czy foldery 'Mix' zawierają odpowiednie obrazy lub dostosuj próg podobieństwa.", "Brak Zmian", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
@@ -1192,31 +1200,29 @@ namespace CosplayManager.ViewModels
             }, "Dopasowywanie dla modelki (wielowątkowe)");
 
 
-
-        private async Task ProcessSingleImageForModelSpecificScanAsync(
+        private async Task<ProcessingResult> ProcessSingleImageForModelSpecificScanAsync(
             string imgPathFromMix, ModelDisplayViewModel modelVM, string modelPath, CancellationToken token,
             ConcurrentBag<Models.ProposedMove> movesForSuggestionWindowConcurrent,
-            ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)> alreadySuggestedGraphicDuplicatesConcurrent,
-            ref long filesWithEmbeddings, ref long autoActionsCount, ref bool anyProfileDataChanged
-        )
+            ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)> alreadySuggestedGraphicDuplicatesConcurrent)
         {
-            if (token.IsCancellationRequested || !File.Exists(imgPathFromMix)) return;
+            var result = new ProcessingResult();
+            if (token.IsCancellationRequested || !File.Exists(imgPathFromMix)) return result;
 
             var sourceEntry = await _imageMetadataService.ExtractMetadataAsync(imgPathFromMix);
-            if (sourceEntry == null) { SimpleFileLogger.LogWarning($"MatchModelSpecific(AsyncItem): Nie udało się załadować metadanych dla: {imgPathFromMix}, pomijam."); return; }
+            if (sourceEntry == null) { SimpleFileLogger.LogWarning($"MatchModelSpecific(AsyncItem): Nie udało się załadować metadanych dla: {imgPathFromMix}, pomijam."); return result; }
 
             await _embeddingSemaphore.WaitAsync(token);
             float[]? sourceEmbedding = null;
             try
             {
-                if (token.IsCancellationRequested) return;
+                if (token.IsCancellationRequested) return result;
                 sourceEmbedding = await _profileService.GetImageEmbeddingAsync(sourceEntry);
             }
             finally { _embeddingSemaphore.Release(); }
 
-            if (sourceEmbedding == null) { SimpleFileLogger.LogWarning($"MatchModelSpecific(AsyncItem): Nie udało się załadować embeddingu dla: {sourceEntry.FilePath}, pomijam."); return; }
-            Interlocked.Increment(ref filesWithEmbeddings);
-            if (token.IsCancellationRequested) return;
+            if (sourceEmbedding == null) { SimpleFileLogger.LogWarning($"MatchModelSpecific(AsyncItem): Nie udało się załadować embeddingu dla: {sourceEntry.FilePath}, pomijam."); return result; }
+            result.FilesWithEmbeddingsIncrement = 1;
+            if (token.IsCancellationRequested) return result;
 
             var bestSuggestionForThisSourceImage = _profileService.SuggestCategory(sourceEmbedding, SuggestionSimilarityThreshold, modelVM.ModelName);
 
@@ -1228,29 +1234,23 @@ namespace CosplayManager.ViewModels
                 var (proposedMove, wasActionAutoHandled, profilesModifiedByCall) = await ProcessDuplicateOrSuggestNewAsync(
                     sourceEntry, targetProfile, similarityToCentroid, modelPath, sourceEmbedding, token);
 
-                if (profilesModifiedByCall) { lock (_profileChangeLock) { anyProfileDataChanged = true; } }
+                if (profilesModifiedByCall) result.ProfileDataChanged = true;
 
                 if (wasActionAutoHandled)
                 {
-                    Interlocked.Increment(ref autoActionsCount);
+                    result.AutoActionsIncrement = 1;
                 }
                 else if (proposedMove != null)
                 {
-                    bool addThisSuggestionToWindow = true;
-
-                    if (addThisSuggestionToWindow)
-                    {
-                        movesForSuggestionWindowConcurrent.Add(proposedMove);
-
-                    }
+                    movesForSuggestionWindowConcurrent.Add(proposedMove);
                 }
             }
             else
             {
                 SimpleFileLogger.Log($"MatchModelSpecific(AsyncItem): Brak sugestii kategorii dla '{sourceEntry.FilePath}' (model: {modelVM.ModelName}).");
             }
+            return result;
         }
-
 
 
         private Task ExecuteSuggestImagesAsync(object? parameter = null) =>
@@ -1270,11 +1270,11 @@ namespace CosplayManager.ViewModels
                 var allModelsCurrentlyInList = HierarchicalProfilesList.ToList();
 
                 long totalFilesFound = 0;
-                long totalFilesWithEmbeddings = 0;
-                long totalAutoActions = 0;
-                bool anyProfileDataChangedDuringEntireOperation = false;
+                long currentTotalFilesWithEmbeddings = 0;
+                long currentTotalAutoActions = 0;
+                bool currentAnyProfileDataChanged = false;
 
-                var processingTasks = new List<Task>();
+                var processingTasks = new List<Task<ProcessingResult>>();
 
                 foreach (var modelVM in allModelsCurrentlyInList)
                 {
@@ -1294,37 +1294,41 @@ namespace CosplayManager.ViewModels
                         if (Directory.Exists(currentMixPath))
                         {
                             var imagePathsInMix = await _fileScannerService.ScanDirectoryAsync(currentMixPath);
-                            Interlocked.Add(ref totalFilesFound, imagePathsInMix.Count);
+                            totalFilesFound += imagePathsInMix.Count;
 
                             foreach (var imgPathFromMix in imagePathsInMix)
                             {
                                 token.ThrowIfCancellationRequested();
-
                                 processingTasks.Add(ProcessSingleImageForGlobalSuggestionsAsync(
                                     imgPathFromMix, modelVM, modelPath, token,
                                     allCollectedSuggestionsGlobalConcurrent,
-                                    alreadySuggestedGraphicDuplicatesGlobalConcurrent,
-                                    ref totalFilesWithEmbeddings,
-                                    ref totalAutoActions,
-                                    ref anyProfileDataChangedDuringEntireOperation
+                                    alreadySuggestedGraphicDuplicatesGlobalConcurrent
                                 ));
                             }
                         }
                     }
                 }
 
-                await Task.WhenAll(processingTasks);
+                var taskResults = await Task.WhenAll(processingTasks);
                 token.ThrowIfCancellationRequested();
 
+                foreach (var result in taskResults)
+                {
+                    currentTotalFilesWithEmbeddings += result.FilesWithEmbeddingsIncrement;
+                    currentTotalAutoActions += result.AutoActionsIncrement;
+                    if (result.ProfileDataChanged)
+                        currentAnyProfileDataChanged = true;
+                }
+
                 var allCollectedSuggestionsGlobal = allCollectedSuggestionsGlobalConcurrent.ToList();
-                SimpleFileLogger.Log($"ExecuteSuggestImagesAsync: Podsumowanie globalne - Znaleziono: {totalFilesFound}, Z embeddingami: {Interlocked.Read(ref totalFilesWithEmbeddings)}, Akcje auto: {Interlocked.Read(ref totalAutoActions)}, Sugestie zebrane: {allCollectedSuggestionsGlobal.Count}. Profile zmodyfikowane: {anyProfileDataChangedDuringEntireOperation}");
+                SimpleFileLogger.Log($"ExecuteSuggestImagesAsync: Podsumowanie globalne - Znaleziono: {totalFilesFound}, Z embeddingami: {currentTotalFilesWithEmbeddings}, Akcje auto: {currentTotalAutoActions}, Sugestie zebrane: {allCollectedSuggestionsGlobal.Count}. Profile zmodyfikowane: {currentAnyProfileDataChanged}");
 
                 _lastModelSpecificSuggestions = new List<Models.ProposedMove>(allCollectedSuggestionsGlobal);
                 _lastScannedModelNameForSuggestions = null;
 
-                StatusMessage = $"Globalne wyszukiwanie zakończone. {Interlocked.Read(ref totalAutoActions)} akcji auto. {allCollectedSuggestionsGlobal.Count} potencjalnych sugestii znaleziono.";
+                StatusMessage = $"Globalne wyszukiwanie zakończone. {currentTotalAutoActions} akcji auto. {allCollectedSuggestionsGlobal.Count} potencjalnych sugestii znaleziono.";
 
-                if (anyProfileDataChangedDuringEntireOperation)
+                if (currentAnyProfileDataChanged)
                 {
                     SimpleFileLogger.Log($"ExecuteSuggestImagesAsync: Wykryto zmiany w profilach podczas globalnego skanowania. Odświeżanie widoku UI.");
                     _isRefreshingProfilesPostMove = true;
@@ -1339,7 +1343,7 @@ namespace CosplayManager.ViewModels
                 {
                     completionMessage += " Użyj menu kontekstowego na modelkach/postaciach, aby przejrzeć znalezione sugestie.";
                 }
-                else if (Interlocked.Read(ref totalAutoActions) == 0 && totalFilesFound > 0)
+                else if (currentTotalAutoActions == 0 && totalFilesFound > 0)
                 {
                     completionMessage = "Globalne wyszukiwanie nie znalazło nowych sugestii ani nie wykonało akcji automatycznych.";
                 }
@@ -1352,33 +1356,28 @@ namespace CosplayManager.ViewModels
             }, "Globalne wyszukiwanie sugestii (wielowątkowe)");
 
 
-
-        private async Task ProcessSingleImageForGlobalSuggestionsAsync(
+        private async Task<ProcessingResult> ProcessSingleImageForGlobalSuggestionsAsync(
             string imgPathFromMix, ModelDisplayViewModel modelVM, string modelPath, CancellationToken token,
             ConcurrentBag<Models.ProposedMove> allCollectedSuggestionsGlobalConcurrent,
-            ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)> alreadySuggestedGraphicDuplicatesGlobalConcurrent,
-            ref long filesWithEmbeddings,
-            ref long autoActions,
-            ref bool profileDataChanged
-
-        )
+            ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)> alreadySuggestedGraphicDuplicatesGlobalConcurrent)
         {
-            if (token.IsCancellationRequested) return;
+            var result = new ProcessingResult();
+            if (token.IsCancellationRequested) return result;
 
             if (!File.Exists(imgPathFromMix))
             {
                 SimpleFileLogger.Log($"ProcessSingleImageForGlobalSuggestionsAsync: Plik {imgPathFromMix} nie istnieje, pomijanie.");
-                return;
+                return result;
             }
 
             var sourceEntry = await _imageMetadataService.ExtractMetadataAsync(imgPathFromMix);
-            if (sourceEntry == null) return;
+            if (sourceEntry == null) return result;
 
             float[]? sourceEmbedding = null;
             await _embeddingSemaphore.WaitAsync(token);
             try
             {
-                if (token.IsCancellationRequested) return;
+                if (token.IsCancellationRequested) return result;
                 sourceEmbedding = await _profileService.GetImageEmbeddingAsync(sourceEntry);
             }
             catch (Exception ex)
@@ -1390,9 +1389,9 @@ namespace CosplayManager.ViewModels
                 _embeddingSemaphore.Release();
             }
 
-            if (sourceEmbedding == null) return;
-            Interlocked.Increment(ref filesWithEmbeddings);
-            if (token.IsCancellationRequested) return;
+            if (sourceEmbedding == null) return result;
+            result.FilesWithEmbeddingsIncrement = 1;
+            if (token.IsCancellationRequested) return result;
 
             var bestSuggestionForThisSourceImage = _profileService.SuggestCategory(sourceEmbedding, SuggestionSimilarityThreshold, modelVM.ModelName);
 
@@ -1404,29 +1403,18 @@ namespace CosplayManager.ViewModels
                 var (proposedMove, wasActionAutoHandled, profilesModifiedByCall) = await ProcessDuplicateOrSuggestNewAsync(
                     sourceEntry, targetProfile, similarityToCentroid, modelPath, sourceEmbedding, token);
 
-                if (profilesModifiedByCall)
-                {
-                    lock (_profileChangeLock)
-                    {
-                        profileDataChanged = true;
-                    }
-                }
+                if (profilesModifiedByCall) result.ProfileDataChanged = true;
 
                 if (wasActionAutoHandled)
                 {
-                    Interlocked.Increment(ref autoActions);
+                    result.AutoActionsIncrement = 1;
                 }
                 else if (proposedMove != null)
                 {
-                    bool addThisSuggestionToGlobalList = true;
-
-                    if (addThisSuggestionToGlobalList)
-                    {
-                        allCollectedSuggestionsGlobalConcurrent.Add(proposedMove);
-
-                    }
+                    allCollectedSuggestionsGlobalConcurrent.Add(proposedMove);
                 }
             }
+            return result;
         }
 
 
@@ -1463,7 +1451,6 @@ namespace CosplayManager.ViewModels
                     MessageBox.Show(StatusMessage, "Brak Sugestii", MessageBoxButton.OK, MessageBoxImage.Information);
                     var uiProfile = modelVM?.CharacterProfiles.FirstOrDefault(cp => cp.CategoryName == charProfileForSuggestions.CategoryName);
                     if (uiProfile != null) uiProfile.PendingSuggestionsCount = 0;
-                    // RefreshPendingSuggestionCountsFromCache(); // Odśwież, aby wyzerować licznik w UI
                     return;
                 }
                 token.ThrowIfCancellationRequested();
@@ -1538,7 +1525,7 @@ namespace CosplayManager.ViewModels
                     }
                     else
                     {
-                        if (_lastScannedModelNameForSuggestions != "__CACHE_CLEARED__") // Było globalne skanowanie
+                        if (_lastScannedModelNameForSuggestions != "__CACHE_CLEARED__")
                         {
                             SimpleFileLogger.Log($"RefreshPendingSuggestionCountsFromCache (Global Scan Results): Attributing {relevantSuggestions.Count} suggestions.");
                             var suggestionsByModel = relevantSuggestions
@@ -1849,8 +1836,7 @@ namespace CosplayManager.ViewModels
                 SimpleFileLogger.Log($"EnsureThumbnailsLoaded: Ładowanie dla {imagesToLoadThumbs.Count} obrazów. Token: {token.GetHashCode()}");
 
                 var tasks = new List<Task>();
-                // Ogranicznik liczby jednoczesnych operacji ładowania miniaturek
-                using var thumbnailSemaphore = new SemaphoreSlim(10, 10); // np. max 10 na raz
+                using var thumbnailSemaphore = new SemaphoreSlim(10, 10);
 
                 foreach (var entry in imagesToLoadThumbs)
                 {
