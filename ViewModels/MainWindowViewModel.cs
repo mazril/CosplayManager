@@ -185,6 +185,7 @@ namespace CosplayManager.ViewModels
         public ICommand CancelCurrentOperationCommand { get; }
         public ICommand EnsureThumbnailsLoadedCommand { get; }
         public ICommand RemoveDuplicatesInModelCommand { get; }
+        public ICommand ApplyAllMatchesForModelCommand { get; } // NOWA KOMENDA
 
 
         public MainWindowViewModel(
@@ -218,6 +219,7 @@ namespace CosplayManager.ViewModels
             AnalyzeModelForSplittingCommand = new AsyncRelayCommand(ExecuteAnalyzeModelForSplittingAsync, CanExecuteAnalyzeModelForSplitting);
             OpenSplitProfileDialogCommand = new AsyncRelayCommand(ExecuteOpenSplitProfileDialogAsync, CanExecuteOpenSplitProfileDialog);
             RemoveDuplicatesInModelCommand = new AsyncRelayCommand(ExecuteRemoveDuplicatesInModelAsync, CanExecuteRemoveDuplicatesInModel);
+            ApplyAllMatchesForModelCommand = new AsyncRelayCommand(ExecuteApplyAllMatchesForModelAsync, CanExecuteApplyAllMatchesForModel); // INICJALIZACJA
 
 
             CancelCurrentOperationCommand = new RelayCommand(ExecuteCancelCurrentOperation, CanExecuteCancelCurrentOperation);
@@ -474,6 +476,20 @@ namespace CosplayManager.ViewModels
                 return canExecute;
             }
             SimpleFileLogger.Log($"[CanExecuteRemoveDuplicatesInModel] RESULT: false (parameter not ModelDisplayViewModel or null)");
+            return false;
+        }
+        private bool CanExecuteApplyAllMatchesForModel(object? parameter)
+        {
+            SimpleFileLogger.Log($"[CanExecuteApplyAllMatchesForModel] CHECKING. IsBusy: {IsBusy}, Parameter type: {parameter?.GetType().Name ?? "null"}");
+            if (parameter is ModelDisplayViewModel modelVM)
+            {
+                bool hasSuggestions = _lastScannedModelNameForSuggestions == modelVM.ModelName && _lastModelSpecificSuggestions.Any(m => m.Similarity >= SuggestionSimilarityThreshold);
+                SimpleFileLogger.Log($"[CanExecuteApplyAllMatchesForModel] Model: {modelVM.ModelName}, HasCharacterProfiles: {modelVM.HasCharacterProfiles}, HasSuggestions: {hasSuggestions}");
+                bool canExecute = !IsBusy && modelVM.HasCharacterProfiles && hasSuggestions;
+                SimpleFileLogger.Log($"[CanExecuteApplyAllMatchesForModel] RESULT for {modelVM.ModelName}: {canExecute}");
+                return canExecute;
+            }
+            SimpleFileLogger.Log($"[CanExecuteApplyAllMatchesForModel] RESULT: false (parameter not ModelDisplayViewModel or null)");
             return false;
         }
 
@@ -1100,7 +1116,7 @@ namespace CosplayManager.ViewModels
                 token.ThrowIfCancellationRequested();
                 int filesFoundInMix = 0, filesWithEmbeddings = 0, autoActionsCount = 0;
                 bool anyProfileDataChangedDuringEntireOperation = false;
-                var alreadySuggestedGraphicDuplicates = new List<(float[] embedding, string targetCategoryName, string sourceFilePath)>();
+                var alreadySuggestedGraphicDuplicates = new List<(float[] embedding, string targetCategoryProfileName, string sourceFilePath)>();
 
 
                 foreach (var mixFolderName in mixedFolders)
@@ -1174,18 +1190,18 @@ namespace CosplayManager.ViewModels
                                                     addThisSuggestionToWindow = false;
                                                     SimpleFileLogger.Log($"[SuggestWindowFilter] Pomijanie sugestii dla '{proposedMove.SourceImage.FilePath}', ponieważ graficznie identyczna sugestia (z '{existingSourcePath}') została już wygenerowana do '{existingTargetCat}'.");
 
-                                                    string pathToDeleteFromFilter = proposedMove.SourceImage.FilePath;
+                                                    string pathToDeleteForFilter = proposedMove.SourceImage.FilePath;
                                                     try
                                                     {
-                                                        if (File.Exists(pathToDeleteFromFilter))
+                                                        if (File.Exists(pathToDeleteForFilter))
                                                         {
-                                                            File.Delete(pathToDeleteFromFilter);
-                                                            SimpleFileLogger.Log($"[SuggestWindowFilterCleanup] Usunięto plik źródłowy duplikatu sugestii: {pathToDeleteFromFilter}");
-                                                            if (await HandleFileMovedOrDeletedUpdateProfilesAsync(pathToDeleteFromFilter, null, null, token))
+                                                            File.Delete(pathToDeleteForFilter);
+                                                            SimpleFileLogger.Log($"[SuggestWindowFilterCleanup] Usunięto plik źródłowy duplikatu sugestii: {pathToDeleteForFilter}");
+                                                            if (await HandleFileMovedOrDeletedUpdateProfilesAsync(pathToDeleteForFilter, null, null, token))
                                                                 anyProfileDataChangedDuringEntireOperation = true;
                                                         }
                                                     }
-                                                    catch (Exception ex) { SimpleFileLogger.LogError($"[SuggestWindowFilterCleanup] Błąd usuwania {pathToDeleteFromFilter}: {ex.Message}", ex); }
+                                                    catch (Exception ex) { SimpleFileLogger.LogError($"[SuggestWindowFilterCleanup] Błąd usuwania {pathToDeleteForFilter}: {ex.Message}", ex); }
                                                     break;
                                                 }
                                             }
@@ -1227,7 +1243,7 @@ namespace CosplayManager.ViewModels
                     {
                         var previewVM = new PreviewChangesViewModel(movesForSuggestionWindow, SuggestionSimilarityThreshold);
                         var previewWindow = new PreviewChangesWindow { DataContext = previewVM, Owner = Application.Current.MainWindow };
-                        previewWindow.SetViewModelCloseAction(previewVM); // Ustawienie akcji zamknięcia
+                        previewWindow.SetViewModelCloseAction(previewVM);
 
                         dialogOutcome = previewWindow.ShowDialog();
                         if (dialogOutcome == true)
@@ -1356,18 +1372,18 @@ namespace CosplayManager.ViewModels
                                                     {
                                                         addThisSuggestionToWindow = false;
                                                         SimpleFileLogger.Log($"[SuggestWindowFilter-Global] Pomijanie sugestii dla '{proposedMove.SourceImage.FilePath}', graficznie identyczna sugestia (z '{existingSourcePath}') już istnieje dla '{existingTargetCat}'.");
-                                                        string pathToDeleteFromFilter = proposedMove.SourceImage.FilePath;
+                                                        string pathToDeleteForFilter = proposedMove.SourceImage.FilePath;
                                                         try
                                                         {
-                                                            if (File.Exists(pathToDeleteFromFilter))
+                                                            if (File.Exists(pathToDeleteForFilter))
                                                             {
-                                                                File.Delete(pathToDeleteFromFilter);
-                                                                SimpleFileLogger.Log($"[SuggestWindowFilterCleanup-Global] Usunięto plik źródłowy duplikatu sugestii: {pathToDeleteFromFilter}");
-                                                                if (await HandleFileMovedOrDeletedUpdateProfilesAsync(pathToDeleteFromFilter, null, null, token))
+                                                                File.Delete(pathToDeleteForFilter);
+                                                                SimpleFileLogger.Log($"[SuggestWindowFilterCleanup-Global] Usunięto plik źródłowy duplikatu sugestii: {pathToDeleteForFilter}");
+                                                                if (await HandleFileMovedOrDeletedUpdateProfilesAsync(pathToDeleteForFilter, null, null, token))
                                                                     anyProfileDataChangedDuringEntireOperation = true;
                                                             }
                                                         }
-                                                        catch (Exception ex) { SimpleFileLogger.LogError($"[SuggestWindowFilterCleanup-Global] Błąd usuwania {pathToDeleteFromFilter}: {ex.Message}", ex); }
+                                                        catch (Exception ex) { SimpleFileLogger.LogError($"[SuggestWindowFilterCleanup-Global] Błąd usuwania {pathToDeleteForFilter}: {ex.Message}", ex); }
                                                         break;
                                                     }
                                                 }
@@ -1399,7 +1415,7 @@ namespace CosplayManager.ViewModels
                     {
                         var previewVM = new PreviewChangesViewModel(movesForSuggestionWindow, SuggestionSimilarityThreshold);
                         var previewWindow = new PreviewChangesWindow { DataContext = previewVM, Owner = Application.Current.MainWindow };
-                        previewWindow.SetViewModelCloseAction(previewVM); // Ustawienie akcji zamknięcia
+                        previewWindow.SetViewModelCloseAction(previewVM);
                         dialogOutcome = previewWindow.ShowDialog();
                         if (dialogOutcome == true) approvedMoves = previewVM.GetApprovedMoves();
                     });
@@ -1513,18 +1529,18 @@ namespace CosplayManager.ViewModels
                                                     {
                                                         addThisSuggestionToWindow = false;
                                                         SimpleFileLogger.Log($"[SuggestWindowFilter-Char] Pomijanie sugestii dla '{proposedMove.SourceImage.FilePath}', graficznie identyczna sugestia (z '{existingSourcePath}') już istnieje dla '{existingTargetCat}'.");
-                                                        string pathToDeleteFromFilter = proposedMove.SourceImage.FilePath;
+                                                        string pathToDeleteForFilter = proposedMove.SourceImage.FilePath;
                                                         try
                                                         {
-                                                            if (File.Exists(pathToDeleteFromFilter))
+                                                            if (File.Exists(pathToDeleteForFilter))
                                                             {
-                                                                File.Delete(pathToDeleteFromFilter);
-                                                                SimpleFileLogger.Log($"[SuggestWindowFilterCleanup-Char] Usunięto plik źródłowy duplikatu sugestii: {pathToDeleteFromFilter}");
-                                                                if (await HandleFileMovedOrDeletedUpdateProfilesAsync(pathToDeleteFromFilter, null, null, token))
+                                                                File.Delete(pathToDeleteForFilter);
+                                                                SimpleFileLogger.Log($"[SuggestWindowFilterCleanup-Char] Usunięto plik źródłowy duplikatu sugestii: {pathToDeleteForFilter}");
+                                                                if (await HandleFileMovedOrDeletedUpdateProfilesAsync(pathToDeleteForFilter, null, null, token))
                                                                     anyProfileDataChangedDuringEntireOperation = true;
                                                             }
                                                         }
-                                                        catch (Exception ex) { SimpleFileLogger.LogError($"[SuggestWindowFilterCleanup-Char] Błąd usuwania {pathToDeleteFromFilter}: {ex.Message}", ex); }
+                                                        catch (Exception ex) { SimpleFileLogger.LogError($"[SuggestWindowFilterCleanup-Char] Błąd usuwania {pathToDeleteForFilter}: {ex.Message}", ex); }
                                                         break;
                                                     }
                                                 }
@@ -1555,7 +1571,7 @@ namespace CosplayManager.ViewModels
                     {
                         var vm = new PreviewChangesViewModel(movesForSuggestionWindow, SuggestionSimilarityThreshold);
                         var win = new PreviewChangesWindow { DataContext = vm, Owner = Application.Current.MainWindow };
-                        win.SetViewModelCloseAction(vm); // Ustawienie akcji zamknięcia
+                        win.SetViewModelCloseAction(vm);
                         outcome = win.ShowDialog();
                         if (outcome == true) approved = vm.GetApprovedMoves();
                     });
@@ -1938,7 +1954,7 @@ namespace CosplayManager.ViewModels
                 {
                     splitVM = new SplitProfileViewModel(originalCharacterProfile, group1Images, group2Images, suggestedName1, suggestedName2);
                     var splitWindow = new SplitProfileWindow { DataContext = splitVM, Owner = Application.Current.MainWindow };
-                    splitWindow.SetViewModelCloseAction(splitVM); // Ustawienie akcji zamknięcia
+                    splitWindow.SetViewModelCloseAction(splitVM);
                     dialogResult = splitWindow.ShowDialog();
                 });
                 token.ThrowIfCancellationRequested();
@@ -2247,6 +2263,72 @@ namespace CosplayManager.ViewModels
                 }
 
             }, "Usuwanie duplikatów w profilach modelki");
+
+        private Task ExecuteApplyAllMatchesForModelAsync(object? parameter) =>
+            RunLongOperation(async token =>
+            {
+                SimpleFileLogger.Log($"[ExecuteApplyAllMatchesForModelAsync] WYWOŁANO. Parameter: {parameter?.GetType().FullName ?? "null"}");
+                if (!(parameter is ModelDisplayViewModel modelVM))
+                {
+                    StatusMessage = "Błąd: Nieprawidłowy parametr dla 'Zastosuj wszystkie dopasowania' (oczekiwano ModelDisplayViewModel).";
+                    SimpleFileLogger.LogWarning(StatusMessage);
+                    MessageBox.Show(StatusMessage, "Błąd Operacji", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                string modelName = modelVM.ModelName;
+                if (_lastScannedModelNameForSuggestions != modelName || !_lastModelSpecificSuggestions.Any())
+                {
+                    StatusMessage = $"Brak zapisanych sugestii do zastosowania dla modelki '{modelName}'. Najpierw uruchom 'Szukaj dopasowań dla tej modelki'.";
+                    MessageBox.Show(StatusMessage, "Brak Sugestii", MessageBoxButton.OK, MessageBoxInformation.Exclamation);
+                    return;
+                }
+
+                // Filtruj sugestie po progu podobieństwa, tak jakby to robiło okno PreviewChanges
+                var movesToApply = _lastModelSpecificSuggestions
+                    .Where(m => m.Similarity >= SuggestionSimilarityThreshold)
+                    .ToList();
+
+                if (!movesToApply.Any())
+                {
+                    StatusMessage = $"Brak sugestii (powyżej progu {SuggestionSimilarityThreshold:F2}) do zastosowania dla modelki '{modelName}'.";
+                    MessageBox.Show(StatusMessage, "Brak Sugestii do Zastosowania", MessageBoxButton.OK, MessageBoxInformation.Exclamation);
+                    return;
+                }
+
+                if (MessageBox.Show($"Czy na pewno chcesz automatycznie zastosować {movesToApply.Count} dopasowań dla modelki '{modelName}'?\nSpowoduje to przeniesienie/usunięcie plików bez dodatkowego podglądu.",
+                                    "Potwierdź Zastosowanie Wszystkich Dopasowań", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                {
+                    StatusMessage = "Zastosowanie wszystkich dopasowań anulowane przez użytkownika.";
+                    SimpleFileLogger.Log($"[ApplyAllMatchesForModel] Anulowano dla modelki: {modelName}.");
+                    return;
+                }
+
+                StatusMessage = $"Rozpoczynanie automatycznego stosowania {movesToApply.Count} dopasowań dla modelki: {modelName}...";
+                SimpleFileLogger.Log($"[ApplyAllMatchesForModel] Rozpoczęto dla modelki: {modelName}. Liczba ruchów: {movesToApply.Count}. Token: {token.GetHashCode()}");
+
+                bool anyProfileDataActuallyChanged = await InternalHandleApprovedMovesAsync(movesToApply, modelVM, null, token);
+                token.ThrowIfCancellationRequested();
+
+                ClearModelSpecificSuggestionsCache(); // Wyczyść sugestie po ich zastosowaniu
+
+                if (anyProfileDataActuallyChanged)
+                {
+                    StatusMessage = $"Zakończono automatyczne stosowanie dopasowań dla modelki '{modelName}'. Odświeżanie widoku...";
+                    _isRefreshingProfilesPostMove = true;
+                    await InternalExecuteLoadProfilesAsync(token);
+                    _isRefreshingProfilesPostMove = false;
+                }
+                else
+                {
+                    StatusMessage = $"Zakończono automatyczne stosowanie dopasowań dla modelki '{modelName}'. Nie wykryto zmian w profilach do odświeżenia UI.";
+                }
+                RefreshPendingSuggestionCountsFromCache(); // Odśwież liczniki w UI (powinny być 0 dla tej modelki)
+                MessageBox.Show($"Zastosowano {movesToApply.Count} dopasowań dla modelki '{modelName}'.", "Zastosowano Wszystkie Dopasowania", MessageBoxButton.OK, MessageBoxImage.Information);
+
+
+            }, "Automatyczne stosowanie wszystkich dopasowań dla modelki");
+
 
         private class ImageFileEntryPathComparer : IEqualityComparer<ImageFileEntry>
         {
