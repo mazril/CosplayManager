@@ -728,70 +728,65 @@ namespace CosplayManager.ViewModels
         }
 
         private Task ExecuteAutoCreateProfilesAsync(object? parameter) =>
-            RunLongOperation(async token =>
+        RunLongOperation(async token =>
+        {
+            SimpleFileLogger.Log($"AutoCreateProfiles: Rozpoczęto skanowanie folderu biblioteki: {LibraryRootPath}. Token: {token.GetHashCode()}");
+            var mixedFoldersToIgnore = new HashSet<string>(SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()), StringComparer.OrdinalIgnoreCase);
+            token.ThrowIfCancellationRequested();
+
+            List<string> modelDirectories;
+            try
             {
-                SimpleFileLogger.Log($"AutoCreateProfiles: Rozpoczęto skanowanie folderu biblioteki: {LibraryRootPath}. Token: {token.GetHashCode()}");
-                var mixedFoldersToIgnore = new HashSet<string>(SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()), StringComparer.OrdinalIgnoreCase);
-                token.ThrowIfCancellationRequested();
-                int totalProfilesCreatedOrUpdated = 0;
-                bool anyProfileDataChangedDuringOperation = false; // Ten flag będzie wymagał synchronizacji w wielowątkowości
-                List<string> modelDirectories;
-                try
-                {
-                    modelDirectories = Directory.GetDirectories(LibraryRootPath).ToList();
-                }
-                catch (Exception ex)
-                {
-                    SimpleFileLogger.LogError($"Błąd pobierania folderów modelek z '{LibraryRootPath}' podczas AutoCreateProfiles", ex);
-                    StatusMessage = $"Błąd dostępu do folderu biblioteki: {ex.Message}";
-                    MessageBox.Show(StatusMessage, "Błąd Biblioteki", MessageBoxButton.OK, MessageBoxImage.Error);
-                    return;
-                }
-                token.ThrowIfCancellationRequested();
+                modelDirectories = Directory.GetDirectories(LibraryRootPath).ToList();
+            }
+            catch (Exception ex)
+            {
+                SimpleFileLogger.LogError($"Błąd pobierania folderów modelek z '{LibraryRootPath}' podczas AutoCreateProfiles", ex);
+                StatusMessage = $"Błąd dostępu do folderu biblioteki: {ex.Message}";
+                MessageBox.Show(StatusMessage, "Błąd Biblioteki", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            token.ThrowIfCancellationRequested();
 
-                // Potencjalne miejsce na zrównoleglenie przetwarzania folderów modelek
-                // List<Task<int>> modelProcessingTasks = new List<Task<int>>();
-                foreach (var modelDir in modelDirectories)
+            var modelProcessingTasks = new List<Task<(int profilesChanged, bool anyDataChanged)>>();
+            foreach (var modelDir in modelDirectories)
+            {
+                token.ThrowIfCancellationRequested();
+                string currentModelName = Path.GetFileName(modelDir);
+                if (string.IsNullOrWhiteSpace(currentModelName) || mixedFoldersToIgnore.Contains(currentModelName))
                 {
-                    // Dla każdego folderu modelki można by utworzyć osobne zadanie
-                    // modelProcessingTasks.Add(ProcessModelDirectoryForAutoCreateAsync(modelDir, mixedFoldersToIgnore, token, ref anyProfileDataChangedDuringOperation));
-                    // Na razie zostawiamy sekwencyjnie dla uproszczenia
-                    token.ThrowIfCancellationRequested();
-                    string currentModelName = Path.GetFileName(modelDir);
-                    if (string.IsNullOrWhiteSpace(currentModelName) || mixedFoldersToIgnore.Contains(currentModelName))
-                    {
-                        SimpleFileLogger.Log($"AutoCreateProfiles: Pomijanie folderu na poziomie biblioteki: '{currentModelName}' (może być folderem Mix lub ignorowanym).");
-                        continue;
-                    }
+                    SimpleFileLogger.Log($"AutoCreateProfiles: Pomijanie folderu na poziomie biblioteki: '{currentModelName}' (może być folderem Mix lub ignorowanym).");
+                    continue;
+                }
 
+                modelProcessingTasks.Add(Task.Run(async () => {
                     int profilesChangedForThisModel = await InternalProcessDirectoryForProfileCreationAsync(
                         modelDir,
                         currentModelName,
-                        new List<string>(),
+                        new List<string>(), // parentCharacterPathParts
                         mixedFoldersToIgnore,
-                        token); // Przekaż anyProfileDataChangedDuringOperation przez ref lub zwracaj złożony typ
+                        token);
+                    return (profilesChangedForThisModel, profilesChangedForThisModel > 0);
+                }, token));
+            }
 
-                    if (profilesChangedForThisModel > 0)
-                    {
-                        anyProfileDataChangedDuringOperation = true; // Synchronizuj dostęp, jeśli `anyProfileDataChangedDuringOperation` jest współdzielone
-                        totalProfilesCreatedOrUpdated += profilesChangedForThisModel;
-                    }
-                }
-                // await Task.WhenAll(modelProcessingTasks);
-                // totalProfilesCreatedOrUpdated = modelProcessingTasks.Sum(t => t.Result);
-                // if (modelProcessingTasks.Any(t => /* sprawdzić czy t.Result wskazuje na zmianę danych */ )) anyProfileDataChangedDuringOperation = true;
+            var results = await Task.WhenAll(modelProcessingTasks);
+            token.ThrowIfCancellationRequested();
 
-                token.ThrowIfCancellationRequested();
-                StatusMessage = $"Automatyczne tworzenie profili zakończone. Utworzono/zaktualizowano: {totalProfilesCreatedOrUpdated} profili.";
+            int totalProfilesCreatedOrUpdated = results.Sum(r => r.profilesChanged);
+            bool anyProfileDataChangedDuringOperation = results.Any(r => r.anyDataChanged);
 
-                if (anyProfileDataChangedDuringOperation)
-                {
-                    _isRefreshingProfilesPostMove = true;
-                    await InternalExecuteLoadProfilesAsync(token);
-                    _isRefreshingProfilesPostMove = false;
-                }
-                MessageBox.Show(StatusMessage, "Skanowanie Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
-            }, "Automatyczne tworzenie profili");
+            StatusMessage = $"Automatyczne tworzenie profili zakończone. Utworzono/zaktualizowano: {totalProfilesCreatedOrUpdated} profili.";
+
+            if (anyProfileDataChangedDuringOperation)
+            {
+                _isRefreshingProfilesPostMove = true;
+                await InternalExecuteLoadProfilesAsync(token);
+                _isRefreshingProfilesPostMove = false;
+            }
+            MessageBox.Show(StatusMessage, "Skanowanie Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
+        }, "Automatyczne tworzenie profili (wielowątkowe)");
+
 
         private async Task<int> InternalProcessDirectoryForProfileCreationAsync(
             string currentDirectoryPath,
@@ -839,14 +834,14 @@ namespace CosplayManager.ViewModels
 
             if (imagePathsInThisExactDirectory.Any())
             {
-                var entriesForProfile = new ConcurrentBag<ImageFileEntry>(); // Dla potencjalnego zrównoleglenia
-                var tasks = imagePathsInThisExactDirectory.Select(async path =>
+                var entriesForProfile = new ConcurrentBag<ImageFileEntry>();
+                var metadataTasks = imagePathsInThisExactDirectory.Select(async path =>
                 {
                     token.ThrowIfCancellationRequested();
                     var entry = await _imageMetadataService.ExtractMetadataAsync(path);
                     if (entry != null) entriesForProfile.Add(entry);
                 }).ToList();
-                await Task.WhenAll(tasks); // Pobierz metadane równolegle
+                await Task.WhenAll(metadataTasks);
 
                 token.ThrowIfCancellationRequested();
                 if (entriesForProfile.Any())
@@ -872,31 +867,29 @@ namespace CosplayManager.ViewModels
             try
             {
                 var subDirectories = Directory.GetDirectories(currentDirectoryPath);
-                var subDirTasks = new List<Task<int>>();
+                var subDirProcessingTasks = new List<Task<int>>();
+
                 foreach (var subDirectoryPath in subDirectories)
                 {
-                    // Rekurencyjne wywołanie może być również zrównoleglone, ale zwiększa złożoność zarządzania tokenem i wynikami
                     token.ThrowIfCancellationRequested();
-                    string subDirectoryName = Path.GetFileName(subDirectoryPath);
-                    // if (mixedFoldersToIgnore.Contains(subDirectoryName)) continue; // Już obsłużone w logice segmentu
-
-                    // Na razie sekwencyjnie dla podfolderów, aby nie komplikować za bardzo
-                    profilesGeneratedOrUpdatedThisCall += await InternalProcessDirectoryForProfileCreationAsync(
-                        subDirectoryPath,
-                        modelNameForProfile,
-                        new List<string>(currentCharacterPathSegments),
-                        mixedFoldersToIgnore,
-                        token);
+                    subDirProcessingTasks.Add(Task.Run(async () =>
+                        await InternalProcessDirectoryForProfileCreationAsync(
+                            subDirectoryPath,
+                            modelNameForProfile,
+                            new List<string>(currentCharacterPathSegments), // Przekaż kopię listy segmentów nadrzędnych
+                            mixedFoldersToIgnore,
+                            token), token));
                 }
-                // await Task.WhenAll(subDirTasks);
-                // profilesGeneratedOrUpdatedThisCall += subDirTasks.Sum(t => t.Result);
 
+                var subDirResults = await Task.WhenAll(subDirProcessingTasks);
+                profilesGeneratedOrUpdatedThisCall += subDirResults.Sum();
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { SimpleFileLogger.LogError($"InternalProcessDir: Błąd przetwarzania podfolderów dla '{currentDirectoryPath}'", ex); }
 
             return profilesGeneratedOrUpdatedThisCall;
         }
+
 
         private bool IsImageBetter(ImageFileEntry entry1, ImageFileEntry entry2)
         {
@@ -1112,7 +1105,7 @@ namespace CosplayManager.ViewModels
                 long filesFoundInMix = 0;
                 long filesWithEmbeddings = 0;
                 long autoActionsCount = 0;
-                bool anyProfileDataChangedDuringEntireOperation = false; // Wymaga ostrożnego zarządzania
+                bool anyProfileDataChangedDuringEntireOperation = false;
                 var alreadySuggestedGraphicDuplicatesConcurrent = new ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)>();
                 var processingTasks = new List<Task>();
 
@@ -1129,10 +1122,11 @@ namespace CosplayManager.ViewModels
                         foreach (var imgPathFromMix in imagePathsInMix)
                         {
                             token.ThrowIfCancellationRequested();
-                            // Przetwarzanie każdego obrazu jako osobne zadanie
+
                             processingTasks.Add(ProcessSingleImageForModelSpecificScanAsync(
                                 imgPathFromMix, modelVM, modelPath, token,
-                                movesForSuggestionWindowConcurrent, alreadySuggestedGraphicDuplicatesConcurrent,
+                                movesForSuggestionWindowConcurrent,
+                                alreadySuggestedGraphicDuplicatesConcurrent,
                                 ref filesWithEmbeddings, ref autoActionsCount, ref anyProfileDataChangedDuringEntireOperation
                             ));
                         }
@@ -1140,7 +1134,7 @@ namespace CosplayManager.ViewModels
                     else { SimpleFileLogger.LogWarning($"MatchModelSpecific: Folder źródłowy '{currentMixPath}' nie istnieje."); }
                 }
 
-                await Task.WhenAll(processingTasks); // Poczekaj na zakończenie wszystkich zadań przetwarzania obrazów
+                await Task.WhenAll(processingTasks);
                 token.ThrowIfCancellationRequested();
 
                 var movesForSuggestionWindow = movesForSuggestionWindowConcurrent.ToList();
@@ -1165,13 +1159,13 @@ namespace CosplayManager.ViewModels
                     if (dialogOutcome == true && approvedMoves.Any())
                     {
                         if (await InternalHandleApprovedMovesAsync(approvedMoves, modelVM, null, token))
-                            anyProfileDataChangedDuringEntireOperation = true; // Ta flaga jest tutaj problematyczna przy współbieżności
+                            lock (_profileChangeLock) { anyProfileDataChangedDuringEntireOperation = true; }
                         _lastModelSpecificSuggestions.RemoveAll(sugg => movesForSuggestionWindow.Contains(sugg));
                     }
                     else if (dialogOutcome == false) StatusMessage = $"Anulowano zmiany dla '{modelVM.ModelName}'.";
                 }
 
-                if (anyProfileDataChangedDuringEntireOperation) // Ostrożnie z tą flagą
+                if (anyProfileDataChangedDuringEntireOperation)
                 {
                     SimpleFileLogger.Log($"ExecuteMatchModelSpecificAsync: Zmiany w profilach dla '{modelVM.ModelName}'. Odświeżanie.");
                     _isRefreshingProfilesPostMove = true;
@@ -1181,7 +1175,7 @@ namespace CosplayManager.ViewModels
                 RefreshPendingSuggestionCountsFromCache();
                 StatusMessage = $"Dla '{modelVM.ModelName}': {Interlocked.Read(ref autoActionsCount)} akcji auto., {modelVM.PendingSuggestionsCount} sugestii.";
 
-                // ... (komunikaty dla użytkownika)
+
                 if (!movesForSuggestionWindow.Any() && Interlocked.Read(ref autoActionsCount) > 0 && !anyProfileDataChangedDuringEntireOperation)
                 {
                     MessageBox.Show($"Zakończono automatyczne operacje dla '{modelVM.ModelName}'. Wykonano {Interlocked.Read(ref autoActionsCount)} akcji. Brak dodatkowych sugestii do przejrzenia.", "Operacje Automatyczne Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -1198,12 +1192,12 @@ namespace CosplayManager.ViewModels
             }, "Dopasowywanie dla modelki (wielowątkowe)");
 
 
-        // Metoda pomocnicza dla ExecuteMatchModelSpecificAsync do przetwarzania pojedynczego obrazu
+
         private async Task ProcessSingleImageForModelSpecificScanAsync(
             string imgPathFromMix, ModelDisplayViewModel modelVM, string modelPath, CancellationToken token,
             ConcurrentBag<Models.ProposedMove> movesForSuggestionWindowConcurrent,
             ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)> alreadySuggestedGraphicDuplicatesConcurrent,
-            ref long filesWithEmbeddings, ref long autoActionsCount, ref bool anyProfileDataChanged // UWAGA: anyProfileDataChanged jest problematyczne
+            ref long filesWithEmbeddings, ref long autoActionsCount, ref bool anyProfileDataChanged
         )
         {
             if (token.IsCancellationRequested || !File.Exists(imgPathFromMix)) return;
@@ -1231,14 +1225,10 @@ namespace CosplayManager.ViewModels
                 CategoryProfile targetProfile = bestSuggestionForThisSourceImage.Item1;
                 double similarityToCentroid = bestSuggestionForThisSourceImage.Item2;
 
-                // UWAGA: ProcessDuplicateOrSuggestNewAsync wykonuje operacje na plikach.
-                // Jeśli wiele wątków wywoła to dla tego samego pliku docelowego lub źródłowego, mogą wystąpić problemy.
-                // Idealnie, ProcessDuplicateOrSuggestNewAsync powinno tylko zwracać proponowaną akcję,
-                // a same operacje plikowe powinny być wykonane później w sposób zsynchronizowany.
                 var (proposedMove, wasActionAutoHandled, profilesModifiedByCall) = await ProcessDuplicateOrSuggestNewAsync(
                     sourceEntry, targetProfile, similarityToCentroid, modelPath, sourceEmbedding, token);
 
-                if (profilesModifiedByCall) { lock (_profileChangeLock) { anyProfileDataChanged = true; } } // Prosta synchronizacja dla flagi
+                if (profilesModifiedByCall) { lock (_profileChangeLock) { anyProfileDataChanged = true; } }
 
                 if (wasActionAutoHandled)
                 {
@@ -1247,17 +1237,11 @@ namespace CosplayManager.ViewModels
                 else if (proposedMove != null)
                 {
                     bool addThisSuggestionToWindow = true;
-                    // Logika filtrowania duplikatów graficznych sugestii - wymaga ostrożności przy wielowątkowości
-                    // Iterowanie i modyfikowanie alreadySuggestedGraphicDuplicatesConcurrent musi być bezpieczne.
-                    // Prostsze może być zebranie wszystkich sugestii i przefiltrowanie ich później, jednowątkowo.
-                    // Na razie pomijamy zaawansowane filtrowanie duplikatów w tym miejscu dla uproszczenia.
+
                     if (addThisSuggestionToWindow)
                     {
                         movesForSuggestionWindowConcurrent.Add(proposedMove);
-                        // if (proposedMove.SourceImageEmbedding != null && (proposedMove.Action == ProposedMoveActionType.CopyNew || proposedMove.Action == ProposedMoveActionType.ConflictKeepBoth))
-                        // {
-                        // alreadySuggestedGraphicDuplicatesConcurrent.Add((proposedMove.SourceImageEmbedding, proposedMove.TargetCategoryProfileName, proposedMove.SourceImage.FilePath));
-                        // }
+
                     }
                 }
             }
@@ -1268,7 +1252,7 @@ namespace CosplayManager.ViewModels
         }
 
 
-        // Global Scan: SuggestImagesCommand
+
         private Task ExecuteSuggestImagesAsync(object? parameter = null) =>
             RunLongOperation(async token =>
             {
@@ -1288,7 +1272,7 @@ namespace CosplayManager.ViewModels
                 long totalFilesFound = 0;
                 long totalFilesWithEmbeddings = 0;
                 long totalAutoActions = 0;
-                bool anyProfileDataChangedDuringEntireOperation = false; // Wymaga ostrożnego zarządzania przy wielowątkowości
+                bool anyProfileDataChangedDuringEntireOperation = false;
 
                 var processingTasks = new List<Task>();
 
@@ -1315,21 +1299,21 @@ namespace CosplayManager.ViewModels
                             foreach (var imgPathFromMix in imagePathsInMix)
                             {
                                 token.ThrowIfCancellationRequested();
-                                // Każdy obraz jest przetwarzany jako osobne zadanie
+
                                 processingTasks.Add(ProcessSingleImageForGlobalSuggestionsAsync(
                                     imgPathFromMix, modelVM, modelPath, token,
                                     allCollectedSuggestionsGlobalConcurrent,
                                     alreadySuggestedGraphicDuplicatesGlobalConcurrent,
                                     ref totalFilesWithEmbeddings,
                                     ref totalAutoActions,
-                                    ref anyProfileDataChangedDuringEntireOperation // Przekazywanie przez ref jest problematyczne dla boola
+                                    ref anyProfileDataChangedDuringEntireOperation
                                 ));
                             }
                         }
                     }
                 }
 
-                await Task.WhenAll(processingTasks); // Czekaj na zakończenie wszystkich zadań
+                await Task.WhenAll(processingTasks);
                 token.ThrowIfCancellationRequested();
 
                 var allCollectedSuggestionsGlobal = allCollectedSuggestionsGlobalConcurrent.ToList();
@@ -1340,7 +1324,7 @@ namespace CosplayManager.ViewModels
 
                 StatusMessage = $"Globalne wyszukiwanie zakończone. {Interlocked.Read(ref totalAutoActions)} akcji auto. {allCollectedSuggestionsGlobal.Count} potencjalnych sugestii znaleziono.";
 
-                if (anyProfileDataChangedDuringEntireOperation) // UWAGA: Bezpieczeństwo tej flagi
+                if (anyProfileDataChangedDuringEntireOperation)
                 {
                     SimpleFileLogger.Log($"ExecuteSuggestImagesAsync: Wykryto zmiany w profilach podczas globalnego skanowania. Odświeżanie widoku UI.");
                     _isRefreshingProfilesPostMove = true;
@@ -1356,7 +1340,7 @@ namespace CosplayManager.ViewModels
                     completionMessage += " Użyj menu kontekstowego na modelkach/postaciach, aby przejrzeć znalezione sugestie.";
                 }
                 else if (Interlocked.Read(ref totalAutoActions) == 0 && totalFilesFound > 0)
-                { // Sprawdź czy jakieś pliki były analizowane
+                {
                     completionMessage = "Globalne wyszukiwanie nie znalazło nowych sugestii ani nie wykonało akcji automatycznych.";
                 }
                 else if (totalFilesFound == 0)
@@ -1368,19 +1352,19 @@ namespace CosplayManager.ViewModels
             }, "Globalne wyszukiwanie sugestii (wielowątkowe)");
 
 
-        // Metoda pomocnicza dla ExecuteSuggestImagesAsync
+
         private async Task ProcessSingleImageForGlobalSuggestionsAsync(
             string imgPathFromMix, ModelDisplayViewModel modelVM, string modelPath, CancellationToken token,
             ConcurrentBag<Models.ProposedMove> allCollectedSuggestionsGlobalConcurrent,
             ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)> alreadySuggestedGraphicDuplicatesGlobalConcurrent,
-            ref long filesWithEmbeddings, // Użyj Interlocked
-            ref long autoActions,         // Użyj Interlocked
-            ref bool profileDataChanged   // Ten parametr jest problematyczny dla współbieżności, jeśli jest modyfikowany.
-                                          // Lepszym podejściem byłoby zwracanie informacji o zmianach i agregowanie ich centralnie.
+            ref long filesWithEmbeddings,
+            ref long autoActions,
+            ref bool profileDataChanged
+
         )
         {
             if (token.IsCancellationRequested) return;
-            // Sprawdzenie istnienia pliku jest ważne, bo mógł zostać usunięty przez inną operację
+
             if (!File.Exists(imgPathFromMix))
             {
                 SimpleFileLogger.Log($"ProcessSingleImageForGlobalSuggestionsAsync: Plik {imgPathFromMix} nie istnieje, pomijanie.");
@@ -1391,7 +1375,7 @@ namespace CosplayManager.ViewModels
             if (sourceEntry == null) return;
 
             float[]? sourceEmbedding = null;
-            await _embeddingSemaphore.WaitAsync(token); // Czekaj na dostęp do semafora
+            await _embeddingSemaphore.WaitAsync(token);
             try
             {
                 if (token.IsCancellationRequested) return;
@@ -1403,11 +1387,11 @@ namespace CosplayManager.ViewModels
             }
             finally
             {
-                _embeddingSemaphore.Release(); // Zwolnij semafor
+                _embeddingSemaphore.Release();
             }
 
             if (sourceEmbedding == null) return;
-            Interlocked.Increment(ref filesWithEmbeddings); // Bezpieczna inkrementacja
+            Interlocked.Increment(ref filesWithEmbeddings);
             if (token.IsCancellationRequested) return;
 
             var bestSuggestionForThisSourceImage = _profileService.SuggestCategory(sourceEmbedding, SuggestionSimilarityThreshold, modelVM.ModelName);
@@ -1417,16 +1401,12 @@ namespace CosplayManager.ViewModels
                 CategoryProfile targetProfile = bestSuggestionForThisSourceImage.Item1;
                 double similarityToCentroid = bestSuggestionForThisSourceImage.Item2;
 
-                // UWAGA: Wywołanie ProcessDuplicateOrSuggestNewAsync w wielu wątkach jest ryzykowne,
-                // jeśli modyfikuje ono współdzielone zasoby (pliki, profile) bez odpowiedniej synchronizacji.
-                // W idealnym świecie, ta metoda powinna tylko zwracać decyzję, a operacje plikowe
-                // powinny być kolejkowane i wykonywane sekwencyjnie lub z blokadami.
                 var (proposedMove, wasActionAutoHandled, profilesModifiedByCall) = await ProcessDuplicateOrSuggestNewAsync(
                     sourceEntry, targetProfile, similarityToCentroid, modelPath, sourceEmbedding, token);
 
                 if (profilesModifiedByCall)
                 {
-                    lock (_profileChangeLock) // Prosta blokada dla flagi
+                    lock (_profileChangeLock)
                     {
                         profileDataChanged = true;
                     }
@@ -1434,30 +1414,16 @@ namespace CosplayManager.ViewModels
 
                 if (wasActionAutoHandled)
                 {
-                    Interlocked.Increment(ref autoActions); // Bezpieczna inkrementacja
+                    Interlocked.Increment(ref autoActions);
                 }
                 else if (proposedMove != null)
                 {
                     bool addThisSuggestionToGlobalList = true;
-                    // Logika filtrowania alreadySuggestedGraphicDuplicatesGlobalConcurrent wymagałaby ostrożności
-                    // np. użycia ConcurrentDictionary lub odpowiednich blokad przy dostępie i modyfikacji.
-                    // Dla uproszczenia, na razie zakładamy, że to filtrowanie jest mniej krytyczne lub zostanie dopracowane.
-                    // Poniższy przykład jest bardzo uproszczony i może nie być w pełni bezpieczny wątkowo bez dodatkowych mechanizmów.
-                    if (proposedMove.SourceImageEmbedding != null &&
-                        (proposedMove.Action == ProposedMoveActionType.CopyNew || proposedMove.Action == ProposedMoveActionType.ConflictKeepBoth))
-                    {
-                        // Ta sekcja wymagałaby przepisania pod kątem bezpieczeństwa wątkowego
-                        // foreach(var (existingEmb, existingTargetCat, existingSourcePath) in alreadySuggestedGraphicDuplicatesGlobalConcurrent.ToList()) // ToList() tworzy kopię
-                        // { ... }
-                    }
 
                     if (addThisSuggestionToGlobalList)
                     {
                         allCollectedSuggestionsGlobalConcurrent.Add(proposedMove);
-                        // if (proposedMove.SourceImageEmbedding != null && (proposedMove.Action == ProposedMoveActionType.CopyNew || proposedMove.Action == ProposedMoveActionType.ConflictKeepBoth))
-                        // {
-                        // alreadySuggestedGraphicDuplicatesGlobalConcurrent.Add((proposedMove.SourceImageEmbedding, proposedMove.TargetCategoryProfileName, proposedMove.SourceImage.FilePath));
-                        // }
+
                     }
                 }
             }
