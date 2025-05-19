@@ -122,6 +122,15 @@
                                                 </TextBlock>
                                             </MenuItem.Header>
                                         </MenuItem>
+                                        <MenuItem Command="{Binding ApplyAllMatchesForModelCommand}"
+                                                  CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                            <MenuItem.Header>
+                                                <TextBlock>
+                                                    <Run Text="Zastosuj wszystkie dopasowania dla: "/>
+                                                    <Run Text="{Binding Path=PlacementTarget.DataContext.ModelName, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue='Modelki'}" FontWeight="Bold"/>
+                                                </TextBlock>
+                                            </MenuItem.Header>
+                                        </MenuItem>
                                         <MenuItem Command="{Binding AnalyzeModelForSplittingCommand}"
                                                   CommandParameter="{Binding Path=PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
                                             <MenuItem.Header>
