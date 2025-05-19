@@ -7,28 +7,26 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Windows;
-using System.Windows.Controls; // Potrzebne dla TextBlock, MenuItem
-using MahApps.Metro.Controls; // Jeœli u¿ywasz MetroWindow
+using System.Windows.Controls;
+using MahApps.Metro.Controls;
 
 namespace CosplayManager
 {
-    public partial class MainWindow : MetroWindow // Lub Window, jeœli nie u¿ywasz MahApps
+    public partial class MainWindow : MetroWindow
     {
         private ClipServiceHttpClient? _clipService;
         private ProfileService? _profileServiceInstance;
         private MainWindowViewModel? _viewModelInstance;
         private SettingsService? _settingsServiceInstance;
-        private EmbeddingCacheService? _embeddingCacheServiceInstance;
-        private ImageMetadataService? _imageMetadataService; // ZADEKLAROWANE POLE KLASY
+        private EmbeddingCacheServiceSQLite? _embeddingCacheServiceInstance; // ZMIANA TYPU
+        private ImageMetadataService? _imageMetadataService;
 
-        // Przyk³adowe œcie¿ki, powinny byæ konfigurowalne lub wczytywane z ustawieñ
-        private string PythonExecutablePath = @"C:\Users\GameStation\AppData\Local\Programs\Python\Python311\python.exe";
-        private string ClipServerScriptPath = @"C:\Projekt\CosplayManager\Python\clip_server.py";
+        private string PythonExecutablePath = @"C:\Users\GameStation\AppData\Local\Programs\Python\Python311\python.exe"; // TODO: Przenieœæ do ustawieñ
+        private string ClipServerScriptPath = @"C:\Projekt\CosplayManager\Python\clip_server.py"; // TODO: Przenieœæ do ustawieñ
 
         public MainWindow()
         {
             InitializeComponent();
-
             this.Loaded += MainWindow_Loaded;
             this.Closing += MainWindow_Closing_SaveItems;
         }
@@ -41,10 +39,10 @@ namespace CosplayManager
             _settingsServiceInstance = new SettingsService();
             UserSettings? loadedSettings = await _settingsServiceInstance.LoadSettingsAsync();
 
-            // TODO: Zastosuj œcie¿ki Pythona z loadedSettings, jeœli istniej¹
-            // np. PythonExecutablePath = loadedSettings.PythonExecutablePath ?? PythonExecutablePath;
-            // ClipServerScriptPath = loadedSettings.ClipServerScriptPath ?? ClipServerScriptPath;
-
+            // Zastosuj œcie¿ki Pythona i inne ustawienia z loadedSettings, jeœli istniej¹
+            // PythonExecutablePath = loadedSettings?.PythonExecutablePath ?? PythonExecutablePath;
+            // ClipServerScriptPath = loadedSettings?.ClipServerScriptPath ?? ClipServerScriptPath;
+            // SimpleFileLogger.IsDebugLoggingEnabled = loadedSettings?.EnableDebugLogging ?? false; // Ustawione w ViewModel
 
             if (!File.Exists(PythonExecutablePath))
             {
@@ -62,7 +60,7 @@ namespace CosplayManager
             }
 
             if (statusTextBlock != null) statusTextBlock.Text = "Uruchamianie serwera AI (CLIP)...";
-            SimpleFileLogger.Log("MainWindow: Uruchamianie serwera CLIP...");
+            SimpleFileLogger.LogHighLevelInfo("MainWindow: Uruchamianie serwera CLIP...");
 
             _clipService = new ClipServiceHttpClient(
                 pathToPythonExecutable: PythonExecutablePath,
@@ -85,24 +83,24 @@ namespace CosplayManager
 
             if (serverStarted)
             {
-                SimpleFileLogger.Log("MainWindow: Serwer CLIP uruchomiony pomyœlnie.");
+                SimpleFileLogger.LogHighLevelInfo("MainWindow: Serwer CLIP uruchomiony pomyœlnie.");
                 if (statusTextBlock != null) statusTextBlock.Text = "Serwer AI uruchomiony. Inicjalizacja ViewModel...";
 
-                _embeddingCacheServiceInstance = new EmbeddingCacheService();
+                _embeddingCacheServiceInstance = new EmbeddingCacheServiceSQLite(); // ZMIANA NA EmbeddingCacheServiceSQLite
                 _profileServiceInstance = new ProfileService(_clipService, _embeddingCacheServiceInstance);
                 var fileScanner = new FileScannerService();
-                _imageMetadataService = new ImageMetadataService(); // PRZYPISANIE DO POLA KLASY
+                _imageMetadataService = new ImageMetadataService();
 
                 _viewModelInstance = new MainWindowViewModel(
                     _profileServiceInstance,
                     fileScanner,
-                    _imageMetadataService, // PRZEKAZANIE POLA KLASY
+                    _imageMetadataService,
                     _settingsServiceInstance);
                 this.DataContext = _viewModelInstance;
 
                 try
                 {
-                    await _viewModelInstance.InitializeAsync();
+                    await _viewModelInstance.InitializeAsync(); // Tutaj ViewModel wczyta ustawienia, w tym EnableDebugLogging
                     if (statusTextBlock != null) statusTextBlock.Text = "Aplikacja gotowa.";
                 }
                 catch (Exception vmEx)
@@ -126,21 +124,18 @@ namespace CosplayManager
 
         private async void MainWindow_Closing_SaveItems(object sender, System.ComponentModel.CancelEventArgs e)
         {
-            SimpleFileLogger.Log("MainWindow: Zamykanie aplikacji...");
+            SimpleFileLogger.LogHighLevelInfo("MainWindow: Zamykanie aplikacji...");
 
             if (_viewModelInstance != null)
             {
-                await _viewModelInstance.OnAppClosingAsync();
+                await _viewModelInstance.OnAppClosingAsync(); // ViewModel zapisze ustawienia
             }
 
-            if (_embeddingCacheServiceInstance != null)
-            {
-                _embeddingCacheServiceInstance.SaveCacheToFile();
-                SimpleFileLogger.Log("MainWindow: Embedding cache zapisany na zamykaniu.");
-            }
+            // EmbeddingCacheServiceSQLite nie wymaga jawnego zapisu ca³ego cache'u przy zamykaniu
+            // _embeddingCacheServiceInstance?.Dispose(); // Jeœli zaimplementowano IDisposable w EmbeddingCacheServiceSQLite
 
             _clipService?.Dispose();
-            SimpleFileLogger.Log("MainWindow: Serwis CLIP zatrzymany.");
+            SimpleFileLogger.LogHighLevelInfo("MainWindow: Serwis CLIP zatrzymany.");
         }
 
         private void ExitMenuItem_Click(object sender, RoutedEventArgs e)
@@ -150,15 +145,12 @@ namespace CosplayManager
 
         private async void TestClipButton_Click(object sender, RoutedEventArgs e)
         {
-            // Sprawdzamy, czy _profileServiceInstance i _imageMetadataService s¹ dostêpne,
-            // poniewa¿ TestClipButton_Click teraz ich u¿ywa.
             if (_profileServiceInstance == null || _imageMetadataService == null)
             {
                 MessageBox.Show("Us³ugi profilowania lub metadanych nie zosta³y zainicjalizowane.", "B³¹d us³ugi", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
-            // Sprawdzenie gotowoœci serwera CLIP (jeœli _clipService istnieje)
             if (_clipService != null && !await _clipService.IsServerRunningAsync(checkEmbedderInitialization: true))
             {
                 var result = MessageBox.Show("Serwer AI (CLIP) nie jest gotowy lub nie dzia³a poprawnie. Czy spróbowaæ go uruchomiæ/zrestartowaæ?",
@@ -167,16 +159,15 @@ namespace CosplayManager
                 {
                     var statusTextBlock = this.FindName("StatusTextBlock") as TextBlock;
                     if (statusTextBlock != null) statusTextBlock.Text = "Próba restartu serwera AI...";
-                    bool restarted = await _clipService.StartServerAsync(); // Ponowne uruchomienie serwera
+                    bool restarted = await _clipService.StartServerAsync();
                     if (statusTextBlock != null) statusTextBlock.Text = restarted ? "Serwer AI (re)startowany." : "Nie uda³o siê (re)startowaæ serwera AI.";
-                    if (!restarted) return; // Jeœli restart siê nie uda³, przerwij
+                    if (!restarted) return;
                 }
                 else
                 {
-                    return; // U¿ytkownik nie chce restartowaæ
+                    return;
                 }
             }
-
 
             OpenFileDialog openFileDialog = new OpenFileDialog
             {
@@ -189,16 +180,14 @@ namespace CosplayManager
                 string imageFilePath = openFileDialog.FileName;
                 var statusTextBlock = this.FindName("StatusTextBlock") as TextBlock;
                 if (statusTextBlock != null) statusTextBlock.Text = $"Analizowanie obrazu: {Path.GetFileName(imageFilePath)}...";
-                SimpleFileLogger.Log($"TestClipButton: Próba analizy obrazu: {imageFilePath}");
+                SimpleFileLogger.LogHighLevelInfo($"TestClipButton: Próba analizy obrazu: {imageFilePath}");
 
                 try
                 {
                     float[]? embedding = null;
-                    // U¿ywamy _imageMetadataService (które jest teraz polem klasy) do utworzenia ImageFileEntry
                     var imageEntry = await _imageMetadataService.ExtractMetadataAsync(imageFilePath);
                     if (imageEntry != null)
                     {
-                        // Przekazujemy imageEntry do GetImageEmbeddingAsync
                         embedding = await _profileServiceInstance.GetImageEmbeddingAsync(imageEntry);
                     }
                     else
@@ -213,13 +202,13 @@ namespace CosplayManager
                                          $"Fragment: [{string.Join(", ", embedding.Take(5).Select(f => f.ToString("F4")))} ...]";
                         MessageBox.Show(message, "Analiza CLIP Zakoñczona", MessageBoxButton.OK, MessageBoxImage.Information);
                         if (statusTextBlock != null) statusTextBlock.Text = $"Analiza '{Path.GetFileName(imageFilePath)}' zakoñczona.";
-                        SimpleFileLogger.Log($"TestClipButton: Sukces. Obraz: {Path.GetFileName(imageFilePath)}, D³. wektora: {embedding.Length}");
+                        SimpleFileLogger.LogHighLevelInfo($"TestClipButton: Sukces. Obraz: {Path.GetFileName(imageFilePath)}, D³. wektora: {embedding.Length}");
                     }
                     else
                     {
                         MessageBox.Show("Nie uda³o siê uzyskaæ wektora cech dla obrazu (wynik null lub pusty).", "B³¹d Analizy CLIP", MessageBoxButton.OK, MessageBoxImage.Warning);
                         if (statusTextBlock != null) statusTextBlock.Text = $"B³¹d analizy '{Path.GetFileName(imageFilePath)}'.";
-                        SimpleFileLogger.Log($"TestClipButton: Nie uda³o siê uzyskaæ wektora cech (null/pusty) dla {Path.GetFileName(imageFilePath)}");
+                        SimpleFileLogger.LogWarning($"TestClipButton: Nie uda³o siê uzyskaæ wektora cech (null/pusty) dla {Path.GetFileName(imageFilePath)}");
                     }
                 }
                 catch (Exception ex)
