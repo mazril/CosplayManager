@@ -6,6 +6,8 @@ using Microsoft.Win32;
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using MahApps.Metro.Controls;
@@ -18,11 +20,8 @@ namespace CosplayManager
         private ProfileService? _profileServiceInstance;
         private MainWindowViewModel? _viewModelInstance;
         private SettingsService? _settingsServiceInstance;
-        private EmbeddingCacheServiceSQLite? _embeddingCacheServiceInstance; // ZMIANA TYPU
+        private EmbeddingCacheServiceSQLite? _embeddingCacheServiceInstance;
         private ImageMetadataService? _imageMetadataService;
-
-        private string PythonExecutablePath = @"C:\Users\GameStation\AppData\Local\Programs\Python\Python311\python.exe"; // TODO: Przenieœæ do ustawieñ
-        private string ClipServerScriptPath = @"C:\Projekt\CosplayManager\Python\clip_server.py"; // TODO: Przenieœæ do ustawieñ
 
         public MainWindow()
         {
@@ -34,108 +33,83 @@ namespace CosplayManager
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             var statusTextBlock = this.FindName("StatusTextBlock") as TextBlock;
-            if (statusTextBlock != null) statusTextBlock.Text = "Inicjalizacja...";
+            if (statusTextBlock != null) statusTextBlock.Text = "Inicjalizacja aplikacji...";
 
             _settingsServiceInstance = new SettingsService();
-            UserSettings? loadedSettings = await _settingsServiceInstance.LoadSettingsAsync();
+            // UserSettings? loadedSettings = await _settingsServiceInstance.LoadSettingsAsync(); // ViewModel wczyta odpowiednie ustawienia
 
-            // Zastosuj œcie¿ki Pythona i inne ustawienia z loadedSettings, jeœli istniej¹
-            // PythonExecutablePath = loadedSettings?.PythonExecutablePath ?? PythonExecutablePath;
-            // ClipServerScriptPath = loadedSettings?.ClipServerScriptPath ?? ClipServerScriptPath;
-            // SimpleFileLogger.IsDebugLoggingEnabled = loadedSettings?.EnableDebugLogging ?? false; // Ustawione w ViewModel
+            _clipService = new ClipServiceHttpClient(); // Tworzony bez œcie¿ek
+            _embeddingCacheServiceInstance = new EmbeddingCacheServiceSQLite();
+            _imageMetadataService = new ImageMetadataService();
+            var fileScanner = new FileScannerService();
+            _profileServiceInstance = new ProfileService(_clipService, _embeddingCacheServiceInstance);
 
-            if (!File.Exists(PythonExecutablePath))
+            _viewModelInstance = new MainWindowViewModel(
+                _profileServiceInstance,
+                fileScanner,
+                _imageMetadataService,
+                _settingsServiceInstance);
+            this.DataContext = _viewModelInstance;
+
+            if (_viewModelInstance != null)
             {
-                MessageBox.Show($"Krytyczny b³¹d: Nie znaleziono interpretera Pythona w: \n{PythonExecutablePath}\n\nSprawdŸ konfiguracjê œcie¿ek.",
-                                "B³¹d konfiguracji interpretera Python", MessageBoxButton.OK, MessageBoxImage.Error);
-                if (statusTextBlock != null) statusTextBlock.Text = "B³¹d konfiguracji Pythona.";
-                return;
-            }
-            if (!File.Exists(ClipServerScriptPath))
-            {
-                MessageBox.Show($"Krytyczny b³¹d: Nie znaleziono skryptu serwera Pythona w: \n{ClipServerScriptPath}\n\nSprawdŸ konfiguracjê œcie¿ek.",
-                                "B³¹d konfiguracji skryptu serwera", MessageBoxButton.OK, MessageBoxImage.Error);
-                if (statusTextBlock != null) statusTextBlock.Text = "B³¹d konfiguracji skryptu serwera.";
-                return;
-            }
-
-            if (statusTextBlock != null) statusTextBlock.Text = "Uruchamianie serwera AI (CLIP)...";
-            SimpleFileLogger.LogHighLevelInfo("MainWindow: Uruchamianie serwera CLIP...");
-
-            _clipService = new ClipServiceHttpClient(
-                pathToPythonExecutable: PythonExecutablePath,
-                pathToClipServerScript: ClipServerScriptPath
-            );
-
-            bool serverStarted = false;
-            try
-            {
-                serverStarted = await _clipService.StartServerAsync();
-            }
-            catch (Exception ex)
-            {
-                SimpleFileLogger.LogError("MainWindow: Krytyczny b³¹d podczas uruchamiania serwera CLIP.", ex);
-                MessageBox.Show($"Krytyczny b³¹d podczas uruchamiania serwera CLIP: {ex.Message}\nSprawdŸ logi aplikacji.",
-                               "B³¹d serwera AI", MessageBoxButton.OK, MessageBoxImage.Error);
-                if (statusTextBlock != null) statusTextBlock.Text = "Krytyczny b³¹d serwera AI.";
-                return;
+                using (var ctsInitVM = new CancellationTokenSource())
+                {
+                    await _viewModelInstance.RunLongOperation(
+                        async (token) => await _viewModelInstance.InitializeAsync(token),
+                        "Inicjalizacja ViewModelu"
+                    );
+                }
             }
 
-            if (serverStarted)
+            bool serverConnectedAndVerified = false;
+            if (_clipService != null)
             {
-                SimpleFileLogger.LogHighLevelInfo("MainWindow: Serwer CLIP uruchomiony pomyœlnie.");
-                if (statusTextBlock != null) statusTextBlock.Text = "Serwer AI uruchomiony. Inicjalizacja ViewModel...";
-
-                _embeddingCacheServiceInstance = new EmbeddingCacheServiceSQLite(); // ZMIANA NA EmbeddingCacheServiceSQLite
-                _profileServiceInstance = new ProfileService(_clipService, _embeddingCacheServiceInstance);
-                var fileScanner = new FileScannerService();
-                _imageMetadataService = new ImageMetadataService();
-
-                _viewModelInstance = new MainWindowViewModel(
-                    _profileServiceInstance,
-                    fileScanner,
-                    _imageMetadataService,
-                    _settingsServiceInstance);
-                this.DataContext = _viewModelInstance;
-
+                if (statusTextBlock != null) statusTextBlock.Text = "Sprawdzanie po³¹czenia z serwerem AI (CLIP)...";
+                SimpleFileLogger.LogHighLevelInfo("MainWindow: Sprawdzanie po³¹czenia z serwerem CLIP...");
                 try
                 {
-                    await _viewModelInstance.InitializeAsync(); // Tutaj ViewModel wczyta ustawienia, w tym EnableDebugLogging
-                    if (statusTextBlock != null) statusTextBlock.Text = "Aplikacja gotowa.";
+                    serverConnectedAndVerified = await _clipService.EnsureServerConnectionAsync();
                 }
-                catch (Exception vmEx)
+                catch (Exception ex)
                 {
-                    SimpleFileLogger.LogError("B³¹d podczas inicjalizacji MainWindowViewModel", vmEx);
-                    MessageBox.Show($"Wyst¹pi³ b³¹d podczas inicjalizacji danych aplikacji: {vmEx.Message}", "B³¹d Inicjalizacji", MessageBoxButton.OK, MessageBoxImage.Error);
-                    if (statusTextBlock != null) statusTextBlock.Text = "B³¹d inicjalizacji ViewModel.";
+                    SimpleFileLogger.LogError("MainWindow: Krytyczny b³¹d podczas próby po³¹czenia z serwerem CLIP.", ex);
+                    MessageBox.Show($"Krytyczny b³¹d podczas próby po³¹czenia z serwerem CLIP: {ex.Message}\nSprawdŸ logi aplikacji.",
+                                   "B³¹d Po³¹czenia z Serwerem AI", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
+            }
+
+            if (serverConnectedAndVerified)
+            {
+                SimpleFileLogger.LogHighLevelInfo("MainWindow: Serwer CLIP dzia³a i jest gotowy.");
+                if (statusTextBlock != null) statusTextBlock.Text = "Serwer AI po³¹czony. Aplikacja gotowa.";
             }
             else
             {
-                SimpleFileLogger.LogError("MainWindow: Nie uda³o siê uruchomiæ serwera CLIP (StartServerAsync zwróci³ false).");
-                if (statusTextBlock != null) statusTextBlock.Text = "B³¹d serwera AI. Funkcje AI niedostêpne.";
-                MessageBox.Show("Nie uda³o siê uruchomiæ serwera AI (CLIP). Funkcjonalnoœæ zwi¹zana z analiz¹ obrazów bêdzie niedostêpna. SprawdŸ konsolê oraz pliki logów.",
-                               "B³¹d uruchamiania serwera AI", MessageBoxButton.OK, MessageBoxImage.Warning);
+                SimpleFileLogger.LogError("MainWindow: Nie uda³o siê po³¹czyæ z serwerem CLIP lub serwer nie jest gotowy. Uruchom serwer Pythona rêcznie na porcie 8008 (lub skonfigurowanym).");
+                if (statusTextBlock != null) statusTextBlock.Text = "B³¹d po³¹czenia z serwerem AI. Funkcje AI niedostêpne.";
+                MessageBox.Show("Nie uda³o siê po³¹czyæ z serwerem AI (CLIP) lub serwer nie jest gotowy.\nUpewnij siê, ¿e serwer Pythona (`clip_server.py`) jest uruchomiony rêcznie i nas³uchuje na skonfigurowanym porcie (domyœlnie 8008).\n\nFunkcjonalnoœæ zwi¹zana z analiz¹ obrazów bêdzie niedostêpna.",
+                              "B³¹d Po³¹czenia z Serwerem AI", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
             var testClipMenuItem = this.FindName("TestClipMenuItem") as MenuItem;
-            if (testClipMenuItem != null) testClipMenuItem.IsEnabled = serverStarted;
+            if (testClipMenuItem != null) testClipMenuItem.IsEnabled = serverConnectedAndVerified;
+
+            if (statusTextBlock != null && (statusTextBlock.Text.EndsWith("...") || statusTextBlock.Text.Contains("Inicjalizacja ViewModelu - Zakoñczono.")))
+            {
+                statusTextBlock.Text = serverConnectedAndVerified ? "Aplikacja gotowa." : "Aplikacja gotowa (funkcje AI niedostêpne z powodu braku po³¹czenia z serwerem).";
+            }
         }
 
         private async void MainWindow_Closing_SaveItems(object sender, System.ComponentModel.CancelEventArgs e)
         {
             SimpleFileLogger.LogHighLevelInfo("MainWindow: Zamykanie aplikacji...");
-
             if (_viewModelInstance != null)
             {
-                await _viewModelInstance.OnAppClosingAsync(); // ViewModel zapisze ustawienia
+                await _viewModelInstance.OnAppClosingAsync();
             }
-
-            // EmbeddingCacheServiceSQLite nie wymaga jawnego zapisu ca³ego cache'u przy zamykaniu
-            // _embeddingCacheServiceInstance?.Dispose(); // Jeœli zaimplementowano IDisposable w EmbeddingCacheServiceSQLite
-
             _clipService?.Dispose();
-            SimpleFileLogger.LogHighLevelInfo("MainWindow: Serwis CLIP zatrzymany.");
+            SimpleFileLogger.LogHighLevelInfo("MainWindow: Zasoby ClipServiceHttpClient zwolnione.");
         }
 
         private void ExitMenuItem_Click(object sender, RoutedEventArgs e)
@@ -150,23 +124,18 @@ namespace CosplayManager
                 MessageBox.Show("Us³ugi profilowania lub metadanych nie zosta³y zainicjalizowane.", "B³¹d us³ugi", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
-
-            if (_clipService != null && !await _clipService.IsServerRunningAsync(checkEmbedderInitialization: true))
+            if (_clipService == null)
             {
-                var result = MessageBox.Show("Serwer AI (CLIP) nie jest gotowy lub nie dzia³a poprawnie. Czy spróbowaæ go uruchomiæ/zrestartowaæ?",
-                                             "Serwer AI niegotowy", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                if (result == MessageBoxResult.Yes)
-                {
-                    var statusTextBlock = this.FindName("StatusTextBlock") as TextBlock;
-                    if (statusTextBlock != null) statusTextBlock.Text = "Próba restartu serwera AI...";
-                    bool restarted = await _clipService.StartServerAsync();
-                    if (statusTextBlock != null) statusTextBlock.Text = restarted ? "Serwer AI (re)startowany." : "Nie uda³o siê (re)startowaæ serwera AI.";
-                    if (!restarted) return;
-                }
-                else
-                {
-                    return;
-                }
+                MessageBox.Show("Us³uga CLIPService nie zosta³a zainicjalizowana.", "B³¹d us³ugi CLIP", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            // SprawdŸ po³¹czenie przed testem
+            if (!await _clipService.EnsureServerConnectionAsync())
+            {
+                MessageBox.Show("Nie uda³o siê po³¹czyæ z serwerem AI (CLIP) lub serwer nie jest gotowy.\nUpewnij siê, ¿e serwer Pythona jest uruchomiony rêcznie.",
+                                             "Serwer AI niegotowy", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
             }
 
             OpenFileDialog openFileDialog = new OpenFileDialog
@@ -184,16 +153,10 @@ namespace CosplayManager
 
                 try
                 {
-                    float[]? embedding = null;
-                    var imageEntry = await _imageMetadataService.ExtractMetadataAsync(imageFilePath);
-                    if (imageEntry != null)
-                    {
-                        embedding = await _profileServiceInstance.GetImageEmbeddingAsync(imageEntry);
-                    }
-                    else
-                    {
-                        SimpleFileLogger.LogWarning($"TestClipButton: Nie uda³o siê utworzyæ ImageFileEntry dla {imageFilePath}");
-                    }
+                    float[]? embedding = await _profileServiceInstance.GetImageEmbeddingAsync( // To wywo³a GetImageEmbeddingFromPathAsync z ClipService
+                        new Models.ImageFileEntry { FilePath = imageFilePath, FileLastModifiedUtc = File.GetLastWriteTimeUtc(imageFilePath), FileSize = new FileInfo(imageFilePath).Length }
+                    );
+
 
                     if (embedding != null && embedding.Any())
                     {
@@ -206,7 +169,7 @@ namespace CosplayManager
                     }
                     else
                     {
-                        MessageBox.Show("Nie uda³o siê uzyskaæ wektora cech dla obrazu (wynik null lub pusty).", "B³¹d Analizy CLIP", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        MessageBox.Show("Nie uda³o siê uzyskaæ wektora cech dla obrazu (wynik null lub pusty). Upewnij siê, ¿e serwer AI dzia³a i odpowiada.", "B³¹d Analizy CLIP", MessageBoxButton.OK, MessageBoxImage.Warning);
                         if (statusTextBlock != null) statusTextBlock.Text = $"B³¹d analizy '{Path.GetFileName(imageFilePath)}'.";
                         SimpleFileLogger.LogWarning($"TestClipButton: Nie uda³o siê uzyskaæ wektora cech (null/pusty) dla {Path.GetFileName(imageFilePath)}");
                     }

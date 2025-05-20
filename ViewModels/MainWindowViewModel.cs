@@ -3,7 +3,7 @@ using CosplayManager.Models;
 using CosplayManager.Services;
 using CosplayManager.ViewModels.Base;
 using CosplayManager.Views;
-using Microsoft.Win32; // Dla OpenFileDialog
+using Microsoft.Win32;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -14,7 +14,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
-// using Ookii.Dialogs.Wpf; // Jeśli używasz, upewnij się, że masz ten using
 
 namespace CosplayManager.ViewModels
 {
@@ -24,8 +23,6 @@ namespace CosplayManager.ViewModels
         private readonly FileScannerService _fileScannerService;
         private readonly ImageMetadataService _imageMetadataService;
         private readonly SettingsService _settingsService;
-        // EmbeddingCacheServiceSQLite nie jest bezpośrednio używany przez ViewModel,
-        // ale przez ProfileService, więc nie ma tu pola dla niego.
 
         private List<Models.ProposedMove> _lastModelSpecificSuggestions = new List<Models.ProposedMove>();
         private string? _lastScannedModelNameForSuggestions;
@@ -59,6 +56,14 @@ namespace CosplayManager.ViewModels
             }
         }
 
+        // --- USUNIĘTE WŁAŚCIWOŚCI DLA ŚCIEŻEK PYTHON ---
+        // private string _pythonExecutablePathVM = string.Empty;
+        // public string PythonExecutablePathVM ...
+        // private string _clipServerScriptPathVM = string.Empty;
+        // public string ClipServerScriptPathVM ...
+        // --------------------------------------------
+
+        // ... (reszta właściwości jak HierarchicalProfilesList, SelectedProfile itp. bez zmian) ...
         private ObservableCollection<ModelDisplayViewModel> _hierarchicalProfilesList;
         public ObservableCollection<ModelDisplayViewModel> HierarchicalProfilesList
         {
@@ -194,6 +199,7 @@ namespace CosplayManager.ViewModels
             }
         }
 
+
         public ICommand LoadProfilesCommand { get; }
         public ICommand GenerateProfileCommand { get; }
         public ICommand SaveProfilesCommand { get; }
@@ -214,6 +220,10 @@ namespace CosplayManager.ViewModels
         public ICommand EnsureThumbnailsLoadedCommand { get; }
         public ICommand RemoveDuplicatesInModelCommand { get; }
         public ICommand ApplyAllMatchesForModelCommand { get; }
+        // --- USUNIĘTE KOMENDY DLA ŚCIEŻEK PYTHON ---
+        // public ICommand SelectPythonPathCommand { get; }
+        // public ICommand SelectClipServerPathCommand { get; }
+        // -----------------------------------------
 
 
         public MainWindowViewModel(
@@ -248,13 +258,16 @@ namespace CosplayManager.ViewModels
             OpenSplitProfileDialogCommand = new AsyncRelayCommand(ExecuteOpenSplitProfileDialogAsync, CanExecuteOpenSplitProfileDialog);
             RemoveDuplicatesInModelCommand = new AsyncRelayCommand(ExecuteRemoveDuplicatesInModelAsync, CanExecuteRemoveDuplicatesInModel);
             ApplyAllMatchesForModelCommand = new AsyncRelayCommand(ExecuteApplyAllMatchesForModelAsync, CanExecuteApplyAllMatchesForModel);
-
+            // --- USUNIĘTE INICJALIZACJE KOMEND DLA ŚCIEŻEK PYTHON ---
+            // SelectPythonPathCommand = new RelayCommand(ExecuteSelectPythonPath); 
+            // SelectClipServerPathCommand = new RelayCommand(ExecuteSelectClipServerPath);
+            // -------------------------------------------------------
 
             CancelCurrentOperationCommand = new RelayCommand(ExecuteCancelCurrentOperation, CanExecuteCancelCurrentOperation);
             EnsureThumbnailsLoadedCommand = new AsyncRelayCommand(ExecuteEnsureThumbnailsLoadedAsync, CanExecuteEnsureThumbnailsLoaded);
         }
 
-        private async Task RunLongOperation(Func<CancellationToken, Task> operation, string statusMessagePrefix)
+        public async Task RunLongOperation(Func<CancellationToken, Task> operation, string statusMessagePrefix)
         {
             CancellationTokenSource? previousCts = _activeLongOperationCts;
             _activeLongOperationCts = new CancellationTokenSource();
@@ -418,42 +431,67 @@ namespace CosplayManager.ViewModels
             SourceFolderNamesInput = this.SourceFolderNamesInput,
             SuggestionSimilarityThreshold = this.SuggestionSimilarityThreshold,
             EnableDebugLogging = this.EnableDebugLogging
+            // --- USUNIĘTE USTAWIANIE ŚCIEŻEK PYTHON ---
+            // PythonExecutablePath = this.PythonExecutablePathVM,
+            // ClipServerScriptPath = this.ClipServerScriptPathVM
+            // -----------------------------------------
         };
 
-        private void ApplySettings(UserSettings settings)
+        public void ApplySettings(UserSettings settings)
         {
-            if (settings == null) return;
-            LibraryRootPath = settings.LibraryRootPath;
-            SourceFolderNamesInput = settings.SourceFolderNamesInput;
-            SuggestionSimilarityThreshold = settings.SuggestionSimilarityThreshold;
-            EnableDebugLogging = settings.EnableDebugLogging;
-            SimpleFileLogger.IsDebugLoggingEnabled = this.EnableDebugLogging;
-            SimpleFileLogger.LogHighLevelInfo($"Zastosowano wczytane ustawienia. Debug logging: {(EnableDebugLogging ? "Enabled" : "Disabled")}.");
+            if (settings == null)
+            {
+                SimpleFileLogger.LogWarning("ApplySettings: Otrzymano null jako ustawienia. Inicjalizacja wartości domyślnych dla VM.");
+                LibraryRootPath = string.Empty;
+                SourceFolderNamesInput = "Mix,Mieszane,Unsorted,Downloaded";
+                SuggestionSimilarityThreshold = 0.85;
+                EnableDebugLogging = false;
+                // --- USUNIĘTE USTAWIANIE WŁAŚCIWOŚCI VM DLA ŚCIEŻEK PYTHON ---
+                // PythonExecutablePathVM = string.Empty; 
+                // ClipServerScriptPathVM = string.Empty;
+                // ----------------------------------------------------------
+                SimpleFileLogger.IsDebugLoggingEnabled = false;
+            }
+            else
+            {
+                LibraryRootPath = settings.LibraryRootPath;
+                SourceFolderNamesInput = settings.SourceFolderNamesInput;
+                SuggestionSimilarityThreshold = settings.SuggestionSimilarityThreshold;
+                EnableDebugLogging = settings.EnableDebugLogging;
+                SimpleFileLogger.IsDebugLoggingEnabled = this.EnableDebugLogging;
+
+                // --- USUNIĘTE USTAWIANIE WŁAŚCIWOŚCI VM DLA ŚCIEŻEK PYTHON ---
+                // PythonExecutablePathVM = settings.PythonExecutablePath;
+                // ClipServerScriptPathVM = settings.ClipServerScriptPath;
+                // ----------------------------------------------------------
+            }
+            SimpleFileLogger.LogHighLevelInfo($"Zastosowano ustawienia w ViewModel. Debug logging: {(EnableDebugLogging ? "Enabled" : "Disabled")}.");
         }
+
 
         private Task ExecuteSaveAppSettingsAsync(object? parameter = null) =>
             RunLongOperation(async token =>
             {
                 token.ThrowIfCancellationRequested();
+                // Usunięto MessageBox o restarcie, bo nie ma już ustawień ścieżek Pythona w UI
                 await _settingsService.SaveSettingsAsync(GetCurrentSettings());
                 StatusMessage = "Ustawienia aplikacji zapisane.";
                 SimpleFileLogger.LogHighLevelInfo("Ustawienia aplikacji zapisane (na żądanie).");
             }, "Zapisywanie ustawień aplikacji");
 
-        public Task InitializeAsync() =>
-            RunLongOperation(async token =>
-            {
-                SimpleFileLogger.LogHighLevelInfo("ViewModel: InitializeAsync start.");
-                ApplySettings(await _settingsService.LoadSettingsAsync());
-                token.ThrowIfCancellationRequested();
-                await InternalExecuteLoadProfilesAsync(token);
-                token.ThrowIfCancellationRequested();
+        public async Task InitializeAsync(CancellationToken token)
+        {
+            SimpleFileLogger.LogHighLevelInfo("ViewModel: InitializeAsync start (właściwa logika).");
+            ApplySettings(await _settingsService.LoadSettingsAsync());
+            token.ThrowIfCancellationRequested();
+            await InternalExecuteLoadProfilesAsync(token);
 
-                if (string.IsNullOrEmpty(LibraryRootPath)) StatusMessage = "Gotowy. Wybierz folder biblioteki.";
-                else if (!Directory.Exists(LibraryRootPath)) StatusMessage = $"Uwaga: Folder biblioteki '{LibraryRootPath}' nie istnieje.";
-                else StatusMessage = "Gotowy.";
-                SimpleFileLogger.LogHighLevelInfo("ViewModel: InitializeAsync koniec.");
-            }, "Inicjalizacja aplikacji");
+            if (string.IsNullOrEmpty(LibraryRootPath)) StatusMessage = "Gotowy. Wybierz folder biblioteki.";
+            else if (!Directory.Exists(LibraryRootPath)) StatusMessage = $"Uwaga: Folder biblioteki '{LibraryRootPath}' nie istnieje.";
+            else StatusMessage = "Gotowy.";
+            SimpleFileLogger.LogHighLevelInfo("ViewModel: InitializeAsync koniec (właściwa logika).");
+        }
+
 
         public async Task OnAppClosingAsync()
         {
@@ -463,7 +501,7 @@ namespace CosplayManager.ViewModels
                 _activeLongOperationCts.Cancel();
                 try
                 {
-                    await Task.WhenAny(Task.Delay(TimeSpan.FromSeconds(1), _activeLongOperationCts.Token), Task.Run(() => { }, _activeLongOperationCts.Token));
+                    await Task.WhenAny(Task.Delay(TimeSpan.FromSeconds(2), _activeLongOperationCts.Token), Task.Run(() => { }, _activeLongOperationCts.Token));
                 }
                 catch (OperationCanceledException) { /* Expected */ }
                 _activeLongOperationCts.Dispose();
@@ -473,6 +511,12 @@ namespace CosplayManager.ViewModels
             SimpleFileLogger.LogHighLevelInfo("ViewModel: OnAppClosingAsync - Ustawienia zapisane.");
         }
 
+        // --- USUNIĘTE METODY ExecuteSelectPythonPath i ExecuteSelectClipServerPath ---
+        // private void ExecuteSelectPythonPath(object? parameter) { ... }
+        // private void ExecuteSelectClipServerPath(object? parameter) { ... }
+        // --------------------------------------------------------------------------
+
+        // ... (reszta kodu bez zmian) ...
         private bool CanExecuteLoadProfiles(object? arg) => !IsBusy;
         private bool CanExecuteSaveAllProfiles(object? arg) => !IsBusy && HierarchicalProfilesList.Any(m => m.HasCharacterProfiles);
         private bool CanExecuteAutoCreateProfiles(object? arg) => !IsBusy && !string.IsNullOrWhiteSpace(LibraryRootPath) && Directory.Exists(LibraryRootPath);
@@ -645,7 +689,7 @@ namespace CosplayManager.ViewModels
            RunLongOperation(async token =>
            {
                SimpleFileLogger.LogHighLevelInfo($"Zapis wszystkich profili. Token: {token.GetHashCode()}");
-               await _profileService.SaveAllProfilesAsync(); // To już nie zapisuje cache'u JSON
+               await _profileService.SaveAllProfilesAsync();
                token.ThrowIfCancellationRequested();
                StatusMessage = "Wszystkie profile zapisane. Cache embeddingów (SQLite) jest aktualizowany na bieżąco.";
                MessageBox.Show(StatusMessage, "Zapisano", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -1946,7 +1990,7 @@ namespace CosplayManager.ViewModels
                 SimpleFileLogger.LogHighLevelInfo($"[ExecuteApplyAllMatchesForModelAsync] Parameter: {parameter?.GetType().FullName ?? "null"}");
                 if (!(parameter is ModelDisplayViewModel modelVM)) { StatusMessage = "Błąd: Nieprawidłowy parametr."; MessageBox.Show(StatusMessage, "Błąd", MessageBoxButton.OK, MessageBoxImage.Error); return; }
                 string modelName = modelVM.ModelName;
-                bool hasRelevantCachedSuggestions = (_lastScannedModelNameForSuggestions == modelName && _lastModelSpecificSuggestions.Any(m => _profileService.GetModelNameFromCategory(m.TargetCategoryProfileName) == modelName)) || (string.IsNullOrEmpty(_lastScannedModelNameForSuggestions) && _lastModelSpecificSuggestions.Any(m => _profileService.GetModelNameFromCategory(m.TargetCategoryProfileName) == modelName));
+                bool hasRelevantCachedSuggestions = (_lastScannedModelNameForSuggestions == modelVM.ModelName && _lastModelSpecificSuggestions.Any(m => _profileService.GetModelNameFromCategory(m.TargetCategoryProfileName) == modelName)) || (string.IsNullOrEmpty(_lastScannedModelNameForSuggestions) && _lastModelSpecificSuggestions.Any(m => _profileService.GetModelNameFromCategory(m.TargetCategoryProfileName) == modelVM.ModelName));
                 if (!hasRelevantCachedSuggestions) { StatusMessage = $"Brak sugestii dla '{modelName}'. Uruchom skanowanie."; MessageBox.Show(StatusMessage, "Brak Sugestii", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
                 var movesToApply = _lastModelSpecificSuggestions.Where(m => m.Similarity >= SuggestionSimilarityThreshold && _profileService.GetModelNameFromCategory(m.TargetCategoryProfileName) == modelName).ToList();
                 if (!movesToApply.Any()) { StatusMessage = $"Brak sugestii (próg {SuggestionSimilarityThreshold:F2}) dla '{modelName}'."; MessageBox.Show(StatusMessage, "Brak Sugestii", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }

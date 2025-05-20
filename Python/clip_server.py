@@ -495,4 +495,4 @@ async def health_check():
 
 if __name__ == "__main__":
     logger.info("Startowanie serwera Uvicorn dla CLIP embeddings...")
-    uvicorn.run("clip_server:app", host="127.0.0.1", port=8000, log_level="debug", reload=True)
+    uvicorn.run("clip_server:app", host="127.0.0.1", port=8008, log_level="debug", reload=True)

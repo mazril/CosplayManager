@@ -1,376 +1,198 @@
 ﻿// Plik: Services/ClipServiceHttpClient.cs
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Text;
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.IO;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
 
-namespace CosplayManager.Services // Upewnij się, że to jest poprawna przestrzeń nazw dla Twojego projektu
+namespace CosplayManager.Services
 {
-    //region Modele DTO (Data Transfer Objects)
-    // Umieszczone tutaj dla spójności z plikiem ClipServiceHttpClient.cs
-
-    public class ClipImagePathInput
-    {
-        public string path { get; set; }
-    }
-
-    public class ClipImagePathsInput
-    {
-        public List<string> paths { get; set; }
-    }
-
-    public class ClipTextIn
-    {
-        public string text { get; set; }
-    }
-
-    public class ClipTextsIn
-    {
-        public List<string> texts { get; set; }
-    }
-
-    public class ClipEmbeddingResponse
-    {
-        public List<float> embedding { get; set; }
-    }
-
-    public class ClipEmbeddingsResponse
-    {
-        public List<List<float>> embeddings { get; set; }
-    }
-
-    public class ClipHealthResponse
-    {
-        public string status { get; set; }
-        public bool embedder_fully_initialized { get; set; }
-        public string effective_device { get; set; }
-        public string details { get; set; }
-    }
-    //endregion
-
     public class ClipServiceHttpClient : IDisposable
     {
-        private readonly string _pythonServerUrl;
-        private readonly string _pathToPythonExecutable;
-        private readonly string _pathToClipServerScript;
-        private readonly string _clipServerWorkingDirectory;
+        private readonly HttpClient _httpClient;
+        private readonly string _baseAddress = "http://127.0.0.1:8008"; // Upewnij się, że to port, na którym ręcznie uruchamiasz serwer Pythona
+        private bool _isServerConfirmedRunning = false;
 
-        private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(180) };
-        private Process _pythonServerProcess;
-        private bool _isDisposed = false;
-        private readonly JsonSerializerOptions _jsonSerializerOptions;
-
-        public ClipServiceHttpClient(
-            string pythonServerUrl = "http://127.0.0.1:8000",
-            string pathToPythonExecutable = "python.exe",
-            string pathToClipServerScript = "clip_server.py")
+        public ClipServiceHttpClient()
         {
-            _pythonServerUrl = pythonServerUrl;
-            _pathToPythonExecutable = pathToPythonExecutable; // Może wymagać pełnej ścieżki lub konfiguracji PATH
+            _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
+            SimpleFileLogger.Log("ClipServiceHttpClient: Konstruktor (tryb łączenia z istniejącym, zewnętrznym serwerem).");
+        }
 
-            // Jeśli pathToClipServerScript nie jest pełną ścieżką, rozwiąż ją względem katalogu aplikacji
-            if (!Path.IsPathRooted(pathToClipServerScript))
+        public async Task<bool> EnsureServerConnectionAsync()
+        {
+            SimpleFileLogger.Log($"ClipServiceHttpClient: Próba potwierdzenia połączenia ze skonfigurowanym serwerem na {_baseAddress}");
+            _isServerConfirmedRunning = await IsServerRunningAsync(checkEmbedderInitialization: true);
+
+            if (_isServerConfirmedRunning)
             {
-                _pathToClipServerScript = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, pathToClipServerScript);
+                SimpleFileLogger.LogHighLevelInfo("ClipServiceHttpClient: Pomyślnie połączono i zweryfikowano zewnętrzny serwer CLIP.");
             }
             else
             {
-                _pathToClipServerScript = pathToClipServerScript;
+                SimpleFileLogger.LogError($"ClipServiceHttpClient: Nie udało się połączyć lub zweryfikować zewnętrznego serwera CLIP. Upewnij się, że serwer jest uruchomiony ręcznie na {_baseAddress} i odpowiada poprawnie na endpoint /health (w tym status embeddera).", null);
             }
-
-            _clipServerWorkingDirectory = Path.GetDirectoryName(_pathToClipServerScript);
-
-            _httpClient.DefaultRequestHeaders.Accept.Clear();
-            _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-            _jsonSerializerOptions = new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true // Dla dopasowania nazw właściwości (np. embedding vs Embedding)
-            };
-        }
-
-        public async Task<bool> StartServerAsync(int startupTimeoutSeconds = 30)
-        {
-            if (await IsServerRunningAsync())
-            {
-                Console.WriteLine("Serwer Pythona już działa.");
-                // Dodatkowo sprawdź, czy embedder jest w pełni zainicjalizowany
-                var health = await GetHealthStatusAsync();
-                if (health != null && health.embedder_fully_initialized)
-                {
-                    Console.WriteLine($"Serwer Pythona zgłasza pełną gotowość. Urządzenie: {health.effective_device}");
-                    return true;
-                }
-                Console.WriteLine("Serwer Pythona działa, ale embedder może nie być w pełni gotowy. Próba restartu/sprawdzenia...");
-                // Można rozważyć próbę zatrzymania i ponownego uruchomienia, jeśli nie jest w pełni gotowy
-            }
-
-            if (!File.Exists(_pathToClipServerScript))
-            {
-                Console.WriteLine($"KRYTYCZNY BŁĄD: Nie znaleziono skryptu serwera Pythona w: {_pathToClipServerScript}");
-                // Tutaj można rzucić wyjątek lub obsłużyć błąd w logice aplikacji
-                throw new FileNotFoundException("Nie znaleziono skryptu serwera Pythona.", _pathToClipServerScript);
-            }
-            if (!File.Exists(_pathToPythonExecutable) && _pathToPythonExecutable.Contains(Path.DirectorySeparatorChar)) // Sprawdź czy pełna ścieżka istnieje
-            {
-                // Jeśli 'python.exe' ma być z PATH, to File.Exists nie zadziała bezpośrednio
-                // ale jeśli podano pełną ścieżkę, to powinna istnieć.
-                // To sprawdzenie jest uproszczone. Lepsze byłoby próba uruchomienia 'python --version'.
-                bool pythonExeInPath = true; // Załóżmy, że jest w PATH, jeśli nie podano pełnej ścieżki
-                if (_pathToPythonExecutable.Contains(Path.DirectorySeparatorChar))
-                {
-                    pythonExeInPath = false; // Podano pełną ścieżkę
-                }
-
-                if (!pythonExeInPath && !File.Exists(_pathToPythonExecutable))
-                {
-                    Console.WriteLine($"KRYTYCZNY BŁĄD: Nie znaleziono interpretera Pythona w: {_pathToPythonExecutable}");
-                    throw new FileNotFoundException("Nie znaleziono interpretera Pythona.", _pathToPythonExecutable);
-                }
-            }
-
-
-            Console.WriteLine($"Próba uruchomienia serwera Pythona: \"{_pathToPythonExecutable}\" \"{_pathToClipServerScript}\" w katalogu \"{_clipServerWorkingDirectory}\"");
-            ProcessStartInfo startInfo = new ProcessStartInfo
-            {
-                FileName = _pathToPythonExecutable,
-                Arguments = $"\"{_pathToClipServerScript}\"",
-                WorkingDirectory = _clipServerWorkingDirectory,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            try
-            {
-                _pythonServerProcess = new Process { StartInfo = startInfo };
-                _pythonServerProcess.OutputDataReceived += (sender, args) => { if (args.Data != null) Console.WriteLine($"[Python Output]: {args.Data}"); };
-                _pythonServerProcess.ErrorDataReceived += (sender, args) => { if (args.Data != null) Console.WriteLine($"[Python Error]: {args.Data}"); };
-
-                bool started = _pythonServerProcess.Start();
-                if (!started)
-                {
-                    Console.WriteLine("Nie udało się uruchomić procesu serwera Pythona.");
-                    _pythonServerProcess = null;
-                    return false;
-                }
-
-                _pythonServerProcess.BeginOutputReadLine();
-                _pythonServerProcess.BeginErrorReadLine();
-
-                Console.WriteLine($"Proces serwera Pythona uruchomiony (PID: {_pythonServerProcess.Id}). Oczekiwanie na gotowość...");
-
-                var stopwatch = Stopwatch.StartNew();
-                while (stopwatch.Elapsed.TotalSeconds < startupTimeoutSeconds)
-                {
-                    if (_pythonServerProcess.HasExited)
-                    {
-                        Console.WriteLine($"Proces serwera Pythona zakończył działanie przedwcześnie (kod wyjścia: {_pythonServerProcess.ExitCode}).");
-                        _pythonServerProcess = null;
-                        return false;
-                    }
-                    var healthStatus = await GetHealthStatusAsync();
-                    if (healthStatus != null && healthStatus.status == "ok" && healthStatus.embedder_fully_initialized)
-                    {
-                        Console.WriteLine($"Serwer Pythona jest gotowy. Urządzenie: {healthStatus.effective_device}. Szczegóły: {healthStatus.details}");
-                        return true;
-                    }
-                    await Task.Delay(TimeSpan.FromSeconds(1));
-                }
-
-                Console.WriteLine($"Serwer Pythona nie stał się gotowy w ciągu {startupTimeoutSeconds} sekund.");
-                StopServer();
-                return false;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Błąd podczas uruchamiania serwera Pythona: {ex.GetType().Name} - {ex.Message}");
-                if (_pythonServerProcess != null && !_pythonServerProcess.HasExited)
-                {
-                    try { _pythonServerProcess.Kill(true); }
-                    catch (InvalidOperationException) { /* Proces mógł już się zakończyć */ }
-                }
-                _pythonServerProcess = null;
-                return false;
-            }
-        }
-
-        public void StopServer()
-        {
-            if (_pythonServerProcess != null)
-            {
-                if (!_pythonServerProcess.HasExited)
-                {
-                    Console.WriteLine($"Zatrzymywanie procesu serwera Pythona (PID: {_pythonServerProcess.Id})...");
-                    try
-                    {
-                        _pythonServerProcess.Kill(true);
-                        _pythonServerProcess.WaitForExit(5000);
-                        if (!_pythonServerProcess.HasExited)
-                        {
-                            Console.WriteLine("Proces serwera Pythona mógł nie zostać poprawnie zatrzymany.");
-                        }
-                        else
-                        {
-                            Console.WriteLine("Proces serwera Pythona zatrzymany.");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Błąd podczas zatrzymywania serwera Pythona: {ex.Message}");
-                    }
-                }
-                else
-                {
-                    Console.WriteLine("Proces serwera Pythona już był zakończony.");
-                }
-                _pythonServerProcess.Dispose();
-                _pythonServerProcess = null;
-            }
-            else
-            {
-                Console.WriteLine("Serwer Pythona nie był uruchomiony lub już został zatrzymany.");
-            }
-        }
-
-        private async Task<ClipHealthResponse> GetHealthStatusAsync()
-        {
-            try
-            {
-                var response = await _httpClient.GetAsync($"{_pythonServerUrl}/health");
-                if (response.IsSuccessStatusCode)
-                {
-                    var jsonResponse = await response.Content.ReadAsStringAsync();
-                    return JsonSerializer.Deserialize<ClipHealthResponse>(jsonResponse, _jsonSerializerOptions);
-                }
-                return null; // Lub rzuć wyjątek / zwróć obiekt błędu
-            }
-            catch (HttpRequestException) { return null; }
-            catch (JsonException ex)
-            {
-                Console.WriteLine($"Błąd deserializacji odpowiedzi z /health: {ex.Message}");
-                return null;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Nieoczekiwany błąd podczas sprawdzania /health: {ex.Message}");
-                return null;
-            }
+            return _isServerConfirmedRunning;
         }
 
         public async Task<bool> IsServerRunningAsync(bool checkEmbedderInitialization = false)
         {
-            var healthStatus = await GetHealthStatusAsync();
-            if (healthStatus == null) return false;
-
-            if (checkEmbedderInitialization)
-            {
-                return healthStatus.status == "ok" && healthStatus.embedder_fully_initialized;
-            }
-            return healthStatus.status == "ok"; // Wystarczy, że serwer odpowiada
-        }
-
-        public async Task<float[]> GetImageEmbeddingFromPathAsync(string imagePath)
-        {
-            // Sprawdzenie, czy serwer działa i jest w pełni zainicjalizowany przed wysłaniem żądania
-            if (!await IsServerRunningAsync(true))
-            {
-                Console.WriteLine("Serwer CLIP API nie jest uruchomiony lub embedder nie jest w pełni gotowy. Próba uruchomienia/restartu...");
-                // Spróbuj uruchomić serwer (jeśli nie działa) lub poczekaj chwilę dłużej
-                if (!await StartServerAsync()) // StartServerAsync wewnętrznie sprawdza /health
-                {
-                    throw new InvalidOperationException("Serwer CLIP API nie jest uruchomiony lub nie udało się go uruchomić z w pełni zainicjalizowanym embedderem.");
-                }
-            }
-
-
-            var payload = new ClipImagePathInput { path = imagePath };
-            var jsonPayload = JsonSerializer.Serialize(payload);
-            var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-
-            HttpResponseMessage response = null;
             try
             {
-                response = await _httpClient.PostAsync($"{_pythonServerUrl}/get_image_embedding", content);
+                SimpleFileLogger.Log($"IsServerRunningAsync: Sprawdzanie endpointu /health na {_baseAddress}");
+                using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseAddress}/health");
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 
-                if (!response.IsSuccessStatusCode)
+                if (response.IsSuccessStatusCode)
                 {
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine($"Błąd HTTP ({response.StatusCode}) z serwera CLIP: {errorContent}");
-                    // Można spróbować zdeserializować ErrorResponse, jeśli serwer go zwraca
-                    try
+                    string content = await response.Content.ReadAsStringAsync(cts.Token);
+                    SimpleFileLogger.Log($"IsServerRunningAsync: Odpowiedź z /health: {content}");
+                    if (checkEmbedderInitialization)
                     {
-                        var errorResponse = JsonSerializer.Deserialize<ErrorResponse>(errorContent, _jsonSerializerOptions); // Zakładając, że masz klasę ErrorResponse
-                        throw new HttpRequestException($"Błąd API: {errorResponse?.detail ?? errorContent}", null, response.StatusCode);
+                        try
+                        {
+                            var healthStatus = JsonSerializer.Deserialize<JsonElement>(content);
+                            JsonElement statusElement;
+                            JsonElement embedderStatusElement; // Zadeklaruj tutaj
+
+                            bool statusOk = healthStatus.TryGetProperty("status", out statusElement) &&
+                                            statusElement.ValueKind == JsonValueKind.String &&
+                                            statusElement.GetString()?.ToLowerInvariant() == "ok";
+
+                            // --- POPRAWKA BŁĘDU CS0165 ---
+                            bool embedderInitialized = healthStatus.TryGetProperty("embedder_fully_initialized", out embedderStatusElement) &&
+                                                       embedderStatusElement.ValueKind == JsonValueKind.True;
+                            // -----------------------------
+
+                            if (statusOk && embedderInitialized)
+                            {
+                                return true;
+                            }
+                            else
+                            {
+                                string? embedderStatusDetail = healthStatus.TryGetProperty("details", out var detailsElem) ? detailsElem.ToString() : "brak szczegółów";
+                                string statusRead = statusOk ? statusElement.GetString() ?? "nieodczytany" : "nieodczytany/błędny";
+                                string embedderInitRead = healthStatus.TryGetProperty("embedder_fully_initialized", out var embInitElem) ? embInitElem.ToString() : "brak klucza";
+
+                                SimpleFileLogger.LogWarning($"IsServerRunningAsync: Health check OK, ale status embeddera nie jest w pełni zainicjalizowany. Status odczytany: '{statusRead}', EmbedderInitialized odczytany: '{embedderInitRead}', Szczegóły: {embedderStatusDetail}. Content: {content}");
+                                return false;
+                            }
+                        }
+                        catch (JsonException jsonEx)
+                        {
+                            SimpleFileLogger.LogError($"IsServerRunningAsync: Błąd deserializacji odpowiedzi z /health: {content}", jsonEx);
+                            return false;
+                        }
                     }
-                    catch (JsonException)
-                    {
-                        throw new HttpRequestException($"Błąd API ({response.StatusCode}): {errorContent}", null, response.StatusCode);
-                    }
+                    return true;
                 }
-                // response.EnsureSuccessStatusCode(); // Alternatywa, ale mniej kontroli nad treścią błędu
-
-                var jsonResponse = await response.Content.ReadAsStringAsync();
-                var embeddingResponse = JsonSerializer.Deserialize<ClipEmbeddingResponse>(jsonResponse, _jsonSerializerOptions);
-
-                return embeddingResponse?.embedding?.ToArray();
+                SimpleFileLogger.LogWarning($"IsServerRunningAsync: Health check nie powiódł się, status: {response.StatusCode}");
             }
-            catch (HttpRequestException ex) // Już zalogowane lub rzucone z bloku wyżej
+            catch (HttpRequestException ex)
             {
-                Console.WriteLine($"Błąd HttpRequestException: {ex.Message} (StatusCode: {ex.StatusCode})");
-                throw;
+                SimpleFileLogger.Log($"IsServerRunningAsync: Nie można połączyć się z serwerem CLIP (HttpRequestException): {ex.Message}");
             }
-            catch (JsonException ex)
+            catch (TaskCanceledException tex)
             {
-                Console.WriteLine($"Błąd deserializacji JSON odpowiedzi z serwera: {ex.Message}");
-                throw;
+                SimpleFileLogger.LogWarning($"IsServerRunningAsync: Timeout podczas łączenia z serwerem CLIP ({_baseAddress}/health): {tex.Message}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Nieoczekiwany błąd podczas GetImageEmbeddingFromPathAsync: {ex.GetType().Name} - {ex.Message}");
-                throw;
+                SimpleFileLogger.LogError($"IsServerRunningAsync: Nieoczekiwany błąd podczas sprawdzania statusu serwera.", ex);
             }
+            return false;
         }
 
-        // TODO: Dodać metody dla przetwarzania wsadowego i tekstów, np.
-        // public async Task<List<float[]>> GetImageEmbeddingsBatchFromPathsAsync(List<string> imagePaths) { ... }
-        // public async Task<float[]> GetTextEmbeddingAsync(string text) { ... }
+        public async Task<float[]?> GetImageEmbeddingFromPathAsync(string imagePath)
+        {
+            if (!_isServerConfirmedRunning)
+            {
+                SimpleFileLogger.LogWarning($"GetImageEmbeddingFromPathAsync: Połączenie z serwerem CLIP nie jest potwierdzone. Próba ponownego sprawdzenia dla obrazu: {imagePath}");
+                if (!await EnsureServerConnectionAsync())
+                {
+                    SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: Serwer CLIP nadal nie jest dostępny po ponownej próbie. Uruchom serwer ręcznie na {_baseAddress}. Nie można uzyskać embeddingu dla: {imagePath}", null);
+                    return null;
+                }
+                SimpleFileLogger.LogHighLevelInfo($"GetImageEmbeddingFromPathAsync: Ponownie potwierdzono połączenie z serwerem CLIP przed żądaniem embeddingu.");
+            }
+
+            if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+            {
+                SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: Ścieżka obrazu jest nieprawidłowa lub plik nie istnieje: '{imagePath}'", null);
+                return null;
+            }
+
+            var payload = new { path = imagePath };
+            string endpoint = $"{_baseAddress}/get_image_embedding";
+            SimpleFileLogger.Log($"GetImageEmbeddingFromPathAsync: Przygotowano payload dla: {imagePath}. Adres docelowy: {endpoint}");
+
+            try
+            {
+                SimpleFileLogger.Log($"GetImageEmbeddingFromPathAsync: Próba wysłania żądania POST dla: {imagePath} do {endpoint}");
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                HttpResponseMessage response = await _httpClient.PostAsJsonAsync(endpoint, payload, cts.Token);
+                SimpleFileLogger.Log($"GetImageEmbeddingFromPathAsync: Otrzymano odpowiedź dla: {imagePath}. Status: {response.StatusCode}");
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var result = await response.Content.ReadFromJsonAsync<EmbeddingResponse>(cancellationToken: cts.Token);
+                    if (result?.embedding != null && result.embedding.Any())
+                    {
+                        SimpleFileLogger.Log($"GetImageEmbeddingFromPathAsync: Pomyślnie uzyskano embedding dla: {imagePath}, długość: {result.embedding.Count}");
+                        return result.embedding.ToArray();
+                    }
+                    else
+                    {
+                        string errorContent = await response.Content.ReadAsStringAsync(cts.Token);
+                        string detailMessage = result?.error ?? errorContent;
+                        SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: Odpowiedź serwera OK, ale brak embeddingu lub błąd w odpowiedzi dla {imagePath}. Szczegóły: {detailMessage}", null);
+                    }
+                }
+                else
+                {
+                    string errorContent = await response.Content.ReadAsStringAsync(cts.Token);
+                    SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: Błąd serwera ({response.StatusCode}) dla {imagePath}. Odpowiedź: {errorContent}", null);
+                }
+            }
+            catch (HttpRequestException ex)
+            {
+                SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: HttpRequestException dla {imagePath} do {endpoint}: {ex.Message}. Sprawdź, czy serwer Pythona działa i nasłuchuje na {_baseAddress}", ex);
+                _isServerConfirmedRunning = false;
+            }
+            catch (TaskCanceledException tex)
+            {
+                SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: Timeout podczas żądania embeddingu dla {imagePath} do {endpoint}: {tex.Message}", tex);
+                _isServerConfirmedRunning = false;
+            }
+            catch (JsonException jsonEx)
+            {
+                SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: Błąd deserializacji JSON dla {imagePath} z {endpoint}: {jsonEx.Message}", jsonEx);
+            }
+            catch (Exception ex)
+            {
+                SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: Nieoczekiwany błąd dla {imagePath} do {endpoint}: {ex.Message}", ex);
+                _isServerConfirmedRunning = false;
+            }
+            return null;
+        }
 
         public void Dispose()
         {
-            Dispose(true);
+            SimpleFileLogger.LogHighLevelInfo("ClipServiceHttpClient.Dispose: Zwalnianie zasobów HttpClient.");
+            _httpClient?.Dispose();
             GC.SuppressFinalize(this);
         }
 
-        protected virtual void Dispose(bool disposing)
+        private class EmbeddingResponse
         {
-            if (_isDisposed) return;
-
-            if (disposing)
-            {
-                StopServer();
-                // HttpClient jest statyczny, więc nie dysponujemy go tutaj. 
-                // Jeśli nie byłby statyczny, tutaj byłoby _httpClient.Dispose();
-            }
-            _isDisposed = true;
+            public List<float>? embedding { get; set; }
+            public string? error { get; set; }
         }
-
-        ~ClipServiceHttpClient()
-        {
-            Dispose(false);
-        }
-    }
-
-    // Dodatkowa klasa DTO dla odpowiedzi błędu z FastAPI, jeśli chcemy ją parsować
-    public class ErrorResponse
-    {
-        public string detail { get; set; }
-        public string type { get; set; } // Opcjonalne, jeśli serwer zwraca
     }
 }

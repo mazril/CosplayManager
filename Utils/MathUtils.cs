@@ -1,62 +1,103 @@
-﻿// Plik: Utils/MathUtils.cs (lub w innym odpowiednim miejscu, np. Services)
-// Upewnij się, że przestrzeń nazw jest zgodna z Twoim projektem
+﻿// Plik: Utils/MathUtils.cs
+using CosplayManager.Services;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 
-namespace CosplayManager.Utils // Przykładowa przestrzeń nazw
+namespace CosplayManager.Utils
 {
-    public static class MathUtils
+    public static class MathUtils // Upewnij się, że klasa jest statyczna, jeśli zawiera tylko metody statyczne
     {
-        public static double CalculateCosineSimilarity(float[] vectorA, float[] vectorB)
+        public static float[]? CalculateAverageEmbedding(List<float[]> embeddings)
         {
-            if (vectorA == null || vectorB == null)
+            if (embeddings == null || !embeddings.Any() || embeddings.Any(e => e == null))
             {
-                throw new ArgumentNullException(vectorA == null ? nameof(vectorA) : nameof(vectorB), "Wektory nie mogą być null.");
+                // Logowanie, że lista jest pusta lub zawiera null embeddingi
+                if (embeddings == null) SimpleFileLogger.Log("MathUtils.CalculateAverageEmbedding: Lista embeddingów jest null.");
+                else if (!embeddings.Any()) SimpleFileLogger.Log("MathUtils.CalculateAverageEmbedding: Lista embeddingów jest pusta.");
+                else SimpleFileLogger.Log("MathUtils.CalculateAverageEmbedding: Lista embeddingów zawiera null-e.");
+                return null;
             }
 
-            if (vectorA.Length != vectorB.Length)
+            // Sprawdzenie, czy wszystkie embeddingi mają tę samą długość
+            int? dimension = null;
+            foreach (var embedding in embeddings)
             {
-                throw new ArgumentException("Wektory muszą mieć taką samą długość.");
+                if (embedding == null) // Powtórne sprawdzenie na wszelki wypadek, choć powyżej już jest
+                {
+                    SimpleFileLogger.LogWarning("MathUtils.CalculateAverageEmbedding: Napotkano null embedding wewnątrz listy. Pomijam.");
+                    continue;
+                }
+                if (dimension == null)
+                {
+                    dimension = embedding.Length;
+                }
+                else if (embedding.Length != dimension.Value)
+                {
+                    SimpleFileLogger.LogError("MathUtils.CalculateAverageEmbedding: Embeddingi mają różne wymiary.", null);
+                    throw new ArgumentException("Wszystkie embeddingi muszą mieć ten sam wymiar.");
+                }
             }
 
-            if (vectorA.Length == 0)
+            if (dimension == null || dimension.Value == 0) // Jeśli wszystkie były null lub puste
             {
-                // Podobieństwo dwóch pustych wektorów można zdefiniować różnie.
-                // 1.0 jeśli są "identycznie puste", 0.0 jeśli nie ma informacji do porównania.
-                // NaN lub wyjątek, jeśli to sytuacja błędna.
-                // Dla bezpieczeństwa, rzućmy wyjątek lub zwróćmy 0, jeśli to nie powinno się zdarzyć.
-                return 0.0; // Lub throw new ArgumentException("Wektory nie mogą być puste.");
+                SimpleFileLogger.LogWarning("MathUtils.CalculateAverageEmbedding: Brak poprawnych embeddingów do uśrednienia (wymiar 0 lub wszystkie były null).");
+                return null;
+            }
+
+
+            float[] averageEmbedding = new float[dimension.Value];
+            int validEmbeddingsCount = 0;
+
+            foreach (var embedding in embeddings)
+            {
+                if (embedding != null && embedding.Length == dimension.Value) // Dodatkowe sprawdzenie
+                {
+                    for (int i = 0; i < dimension.Value; i++)
+                    {
+                        averageEmbedding[i] += embedding[i];
+                    }
+                    validEmbeddingsCount++;
+                }
+            }
+
+            if (validEmbeddingsCount == 0)
+            {
+                SimpleFileLogger.LogWarning("MathUtils.CalculateAverageEmbedding: Brak poprawnych embeddingów po pętli (validEmbeddingsCount = 0).");
+                return null; // Lub zwróć pustą tablicę, w zależności od logiki
+            }
+
+
+            for (int i = 0; i < dimension.Value; i++)
+            {
+                averageEmbedding[i] /= validEmbeddingsCount;
+            }
+
+            return averageEmbedding;
+        }
+
+        public static double CalculateCosineSimilarity(float[] vecA, float[] vecB)
+        {
+            if (vecA == null || vecB == null || vecA.Length != vecB.Length || vecA.Length == 0)
+            {
+                // SimpleFileLogger.LogWarning("CalculateCosineSimilarity: Nieprawidłowe wektory wejściowe.");
+                return 0.0; // Lub rzuć wyjątek, w zależności od oczekiwanego zachowania
             }
 
             double dotProduct = 0.0;
-            double magnitudeA = 0.0;
-            double magnitudeB = 0.0;
+            double normA = 0.0;
+            double normB = 0.0;
 
-            for (int i = 0; i < vectorA.Length; i++)
+            for (int i = 0; i < vecA.Length; i++)
             {
-                dotProduct += vectorA[i] * vectorB[i];
-                magnitudeA += vectorA[i] * vectorA[i];
-                magnitudeB += vectorB[i] * vectorB[i];
+                dotProduct += vecA[i] * vecB[i];
+                normA += vecA[i] * vecA[i];
+                normB += vecB[i] * vecB[i];
             }
 
-            magnitudeA = Math.Sqrt(magnitudeA);
-            magnitudeB = Math.Sqrt(magnitudeB);
+            if (normA == 0 || normB == 0) return 0.0; // Unikaj dzielenia przez zero
 
-            if (magnitudeA == 0.0 || magnitudeB == 0.0)
-            {
-                // Jeśli jeden z wektorów ma zerową długość, podobieństwo kosinusowe jest niezdefiniowane
-                // lub można przyjąć 0, jeśli wektory są różne (jeden zerowy, drugi nie).
-                // Jeśli oba są zerowe, można by zwrócić 1.0.
-                // W przypadku wektorów cech, zerowa magnituda jest rzadka.
-                // Jeśli magnitudeA i magnitudeB są oba 0, a dotProduct też jest 0, to 0/0 -> NaN.
-                // Jeśli jeden jest 0, a drugi nie, to dotProduct/0 -> Infinity/NaN.
-                // Bezpieczniej zwrócić 0, jeśli którykolwiek jest zerowy, chyba że oba są zerowe.
-                if (magnitudeA == magnitudeB) // Oba są 0
-                    return 1.0; // Można argumentować, że są idealnie podobne (oba są "niczym") lub 0.0
-                else
-                    return 0.0; // Jeden jest zerowy, drugi nie - brak podobieństwa.
-            }
-
-            return dotProduct / (magnitudeA * magnitudeB);
+            return dotProduct / (Math.Sqrt(normA) * Math.Sqrt(normB));
         }
     }
 }

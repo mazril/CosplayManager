@@ -2,12 +2,12 @@
 using CosplayManager.Models;
 using CosplayManager.Utils;
 using System;
-using System.Collections.Concurrent; // Dla ConcurrentBag w zadaniach równoległych
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
-using System.Threading; // Dla SemaphoreSlim
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CosplayManager.Services
@@ -15,13 +15,14 @@ namespace CosplayManager.Services
     public class ProfileService
     {
         private List<CategoryProfile> _profiles;
-        private readonly ClipServiceHttpClient _clipService;
+        private readonly ClipServiceHttpClient? _clipService; // Może być null, jeśli serwer nie działa
         private readonly EmbeddingCacheServiceSQLite _embeddingCacheService;
         private readonly string _profilesBaseFolderPath;
+        private const int MAX_CONCURRENT_EMBEDDINGS_PER_PROFILE_GENERATION = 1; // Pozostawiamy na 1 dla stabilności
 
-        // ZMIANA TESTOWA: Ograniczenie współbieżności do 1
-        private const int MAX_CONCURRENT_EMBEDDINGS_PER_PROFILE_GENERATION = 1;
-
+        // --- DODANO: Słownik obiektów blokad dla zapisu plików profili modelek ---
+        private readonly ConcurrentDictionary<string, object> _modelFileLocks = new ConcurrentDictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        // ----------------------------------------------------------------------
 
         private class ModelProfilesFileContent
         {
@@ -29,9 +30,10 @@ namespace CosplayManager.Services
             public List<CategoryProfile> CharacterProfiles { get; set; } = new List<CategoryProfile>();
         }
 
-        public ProfileService(ClipServiceHttpClient clipService, EmbeddingCacheServiceSQLite embeddingCacheService, string profilesFolderName = "CategoryProfiles")
+        // Zezwól na null dla clipService, jeśli serwer Pythona nie jest krytyczny dla każdej operacji
+        public ProfileService(ClipServiceHttpClient? clipService, EmbeddingCacheServiceSQLite embeddingCacheService, string profilesFolderName = "CategoryProfiles")
         {
-            _clipService = clipService ?? throw new ArgumentNullException(nameof(clipService));
+            _clipService = clipService; // Nie rzucaj wyjątku, jeśli jest null
             _embeddingCacheService = embeddingCacheService ?? throw new ArgumentNullException(nameof(embeddingCacheService));
             _profilesBaseFolderPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, profilesFolderName);
 
@@ -50,6 +52,7 @@ namespace CosplayManager.Services
             _profiles = new List<CategoryProfile>();
         }
 
+        // ... (GetProfile, GetModelNameFromCategory, GetCharacterNameFromCategory, SanitizeFileName bez zmian) ...
         public IReadOnlyList<CategoryProfile> GetAllProfiles() => _profiles.AsReadOnly();
 
         public CategoryProfile? GetProfile(string categoryName)
@@ -82,13 +85,21 @@ namespace CosplayManager.Services
             return name.Trim();
         }
 
+
         public async Task<float[]?> GetImageEmbeddingAsync(ImageFileEntry imageEntry)
         {
+            if (_clipService == null) // Sprawdzenie, czy clipService jest dostępny
+            {
+                SimpleFileLogger.LogWarning($"GetImageEmbeddingAsync: ClipService jest null. Nie można pobrać embeddingu dla {imageEntry?.FilePath}.");
+                return null;
+            }
             if (imageEntry == null || string.IsNullOrWhiteSpace(imageEntry.FilePath))
             {
                 SimpleFileLogger.Log($"ProfileService.GetImageEmbeddingAsync: Nieprawidłowy ImageFileEntry lub ścieżka.");
                 return null;
             }
+            // Dodatkowe logowanie wartości przekazywanych do cache'u
+            SimpleFileLogger.Log($"GetImageEmbeddingAsync dla '{imageEntry.FilePath}': CurrentModUTC={imageEntry.FileLastModifiedUtc:o}, CurrentSize={imageEntry.FileSize}");
 
             try
             {
@@ -99,6 +110,7 @@ namespace CosplayManager.Services
                     async (path) =>
                     {
                         SimpleFileLogger.Log($"Embedding provider (cache miss/invalid) called for: {path}");
+                        if (_clipService == null) return null; // Ponowne sprawdzenie na wszelki wypadek
                         return await _clipService.GetImageEmbeddingFromPathAsync(path);
                     });
             }
@@ -130,7 +142,10 @@ namespace CosplayManager.Services
                 CategoryProfile? existingProfile = GetProfile(categoryName);
                 if (existingProfile != null)
                 {
-                    _profiles.Remove(existingProfile);
+                    lock (_profiles) // Zabezpiecz modyfikację listy _profiles
+                    {
+                        _profiles.Remove(existingProfile);
+                    }
                     SimpleFileLogger.Log($"GenerateProfileAsync: Usunięto profil '{categoryName}' z pamięci.");
                     await SaveProfilesForModelAsync(modelName);
                 }
@@ -138,60 +153,61 @@ namespace CosplayManager.Services
             }
 
             var embeddingsWithPaths = new ConcurrentBag<(float[] Embedding, string Path)>();
-            using (var localEmbeddingSemaphore = new SemaphoreSlim(MAX_CONCURRENT_EMBEDDINGS_PER_PROFILE_GENERATION))
+            if (_clipService != null) // Pobieraj embeddingi tylko jeśli _clipService jest dostępny
             {
-                var embeddingTasks = new List<Task>();
-                foreach (var entry in validImageFileEntries)
+                using (var localEmbeddingSemaphore = new SemaphoreSlim(MAX_CONCURRENT_EMBEDDINGS_PER_PROFILE_GENERATION))
                 {
-                    embeddingTasks.Add(Task.Run(async () =>
+                    var embeddingTasks = new List<Task>();
+                    foreach (var entry in validImageFileEntries)
                     {
-                        await localEmbeddingSemaphore.WaitAsync();
-                        try
+                        embeddingTasks.Add(Task.Run(async () =>
                         {
-                            float[]? embedding = await GetImageEmbeddingAsync(entry);
-                            if (embedding != null)
+                            await localEmbeddingSemaphore.WaitAsync();
+                            try
                             {
-                                embeddingsWithPaths.Add((embedding, entry.FilePath));
+                                float[]? embedding = await GetImageEmbeddingAsync(entry);
+                                if (embedding != null)
+                                {
+                                    embeddingsWithPaths.Add((embedding, entry.FilePath));
+                                }
+                                else
+                                {
+                                    SimpleFileLogger.LogWarning($"GenerateProfileAsync: Nie udało się uzyskać wektora cech dla obrazu: {entry.FilePath} w kategorii {categoryName}");
+                                }
                             }
-                            else
+                            finally
                             {
-                                SimpleFileLogger.Log($"GenerateProfileAsync: Nie udało się uzyskać wektora cech dla obrazu: {entry.FilePath} w kategorii {categoryName}");
+                                localEmbeddingSemaphore.Release();
                             }
-                        }
-                        finally
-                        {
-                            localEmbeddingSemaphore.Release();
-                        }
-                    }));
+                        }));
+                    }
+                    await Task.WhenAll(embeddingTasks);
                 }
-                await Task.WhenAll(embeddingTasks);
             }
+            else
+            {
+                SimpleFileLogger.LogWarning($"GenerateProfileAsync: ClipService jest null. Nie można pobrać embeddingów dla profilu '{categoryName}'. Profil zostanie utworzony bez centroidu.");
+            }
+
 
             var collectedEmbeddings = embeddingsWithPaths.Select(ep => ep.Embedding).ToList();
             var collectedPaths = embeddingsWithPaths.Select(ep => ep.Path).ToList();
 
-
-            if (!collectedEmbeddings.Any())
+            CategoryProfile? profile;
+            lock (_profiles) // Zabezpiecz dostęp do _profiles
             {
-                SimpleFileLogger.Log($"GenerateProfileAsync: Nie udało się wygenerować żadnych wektorów cech dla '{categoryName}'. Profil nie został utworzony/zaktualizowany.");
-                CategoryProfile? existingProfileToClearNoEmbeddings = GetProfile(categoryName);
-                if (existingProfileToClearNoEmbeddings != null)
+                profile = GetProfile(categoryName); // GetProfile jest teraz bezpieczne
+                if (profile == null)
                 {
-                    _profiles.Remove(existingProfileToClearNoEmbeddings);
-                    SimpleFileLogger.Log($"GenerateProfileAsync: Usunięto profil '{categoryName}' z pamięci z powodu braku embeddingów.");
-                    await SaveProfilesForModelAsync(modelName);
+                    profile = new CategoryProfile(categoryName);
+                    _profiles.Add(profile);
+                    SimpleFileLogger.Log($"GenerateProfileAsync: Utworzono nowy obiekt profilu '{categoryName}' w pamięci.");
                 }
-                return;
             }
 
-            CategoryProfile? profile = GetProfile(categoryName);
-            if (profile == null)
-            {
-                profile = new CategoryProfile(categoryName);
-                _profiles.Add(profile);
-                SimpleFileLogger.Log($"GenerateProfileAsync: Utworzono nowy obiekt profilu '{categoryName}' w pamięci.");
-            }
-            profile.UpdateCentroid(collectedEmbeddings, collectedPaths);
+            // Jeśli nie ma embeddingów (bo np. clipService był null), to UpdateCentroid wyczyści istniejący
+            profile.UpdateCentroid(collectedEmbeddings, collectedPaths.Any() ? collectedPaths : validImageFileEntries.Select(e => e.FilePath).ToList());
+
 
             await SaveProfilesForModelAsync(modelName);
             SimpleFileLogger.LogHighLevelInfo($"GenerateProfileAsync: Zakończono dla kategorii '{categoryName}'. Profil zaktualizowany/utworzony i zapisany dla modelki '{modelName}'.");
@@ -208,73 +224,100 @@ namespace CosplayManager.Services
             string sanitizedModelName = SanitizeFileName(modelName);
             string modelProfilePath = Path.Combine(_profilesBaseFolderPath, $"{sanitizedModelName}.json");
 
-            List<CategoryProfile> profilesForThisModel = _profiles
-                .Where(p => GetModelNameFromCategory(p.CategoryName).Equals(modelName, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            if (!profilesForThisModel.Any())
+            List<CategoryProfile> profilesForThisModel;
+            lock (_profiles) // Zabezpiecz odczyt z _profiles
             {
-                if (File.Exists(modelProfilePath))
+                profilesForThisModel = _profiles
+                   .Where(p => GetModelNameFromCategory(p.CategoryName).Equals(modelName, StringComparison.OrdinalIgnoreCase))
+                   .ToList(); // Tworzymy kopię, aby uniknąć problemów z modyfikacją podczas iteracji/zapisu
+            }
+
+
+            // --- ZMIANA: Blokada zapisu pliku dla konkretnej modelki ---
+            object fileLock = _modelFileLocks.GetOrAdd(modelProfilePath, _ => new object());
+            lock (fileLock)
+            // ---------------------------------------------------------
+            {
+                if (!profilesForThisModel.Any())
                 {
-                    try
+                    if (File.Exists(modelProfilePath))
                     {
-                        File.Delete(modelProfilePath);
-                        SimpleFileLogger.LogHighLevelInfo($"SaveProfilesForModelAsync: Usunięto plik profilu dla modelki '{modelName}', ponieważ nie ma już dla niej postaci: {modelProfilePath}");
+                        try
+                        {
+                            File.Delete(modelProfilePath);
+                            SimpleFileLogger.LogHighLevelInfo($"SaveProfilesForModelAsync: Usunięto plik profilu dla modelki '{modelName}', ponieważ nie ma już dla niej postaci: {modelProfilePath}");
+                        }
+                        catch (Exception ex)
+                        {
+                            SimpleFileLogger.LogError($"SaveProfilesForModelAsync: Błąd podczas usuwania pliku profilu dla modelki '{modelName}': {modelProfilePath}", ex);
+                        }
                     }
-                    catch (Exception ex)
-                    {
-                        SimpleFileLogger.LogError($"SaveProfilesForModelAsync: Błąd podczas usuwania pliku profilu dla modelki '{modelName}': {modelProfilePath}", ex);
-                    }
+                    return; // Zwróć, jeśli nie ma profili do zapisania (poza blokadą)
                 }
-                return;
-            }
 
-            ModelProfilesFileContent fileContent = new ModelProfilesFileContent
-            {
-                ModelName = modelName,
-                CharacterProfiles = profilesForThisModel
-            };
+                ModelProfilesFileContent fileContent = new ModelProfilesFileContent
+                {
+                    ModelName = modelName,
+                    CharacterProfiles = profilesForThisModel
+                };
 
-            try
-            {
-                var options = new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
-                string jsonString = JsonSerializer.Serialize(fileContent, options);
-                await File.WriteAllTextAsync(modelProfilePath, jsonString);
-                SimpleFileLogger.LogHighLevelInfo($"SaveProfilesForModelAsync: Profile dla modelki '{modelName}' zapisane do: {modelProfilePath} (Liczba postaci: {profilesForThisModel.Count})");
-            }
-            catch (Exception ex)
-            {
-                SimpleFileLogger.LogError($"SaveProfilesForModelAsync: Błąd podczas zapisywania profili dla modelki '{modelName}' do '{modelProfilePath}'", ex);
-            }
+                try
+                {
+                    var options = new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+                    string jsonString = JsonSerializer.Serialize(fileContent, options);
+                    // Użyj File.WriteAllText zamiast WriteAllTextAsync wewnątrz locka, aby uniknąć problemów z async w lock
+                    File.WriteAllText(modelProfilePath, jsonString);
+                    SimpleFileLogger.LogHighLevelInfo($"SaveProfilesForModelAsync: Profile dla modelki '{modelName}' zapisane do: {modelProfilePath} (Liczba postaci: {profilesForThisModel.Count})");
+                }
+                catch (IOException ioEx) // Łap konkretnie IOException
+                {
+                    SimpleFileLogger.LogError($"SaveProfilesForModelAsync: Błąd IO podczas zapisywania profili dla modelki '{modelName}' do '{modelProfilePath}'. Być może plik jest nadal używany.", ioEx);
+                    // Można tu dodać logikę ponawiania próby lub inną obsługę
+                }
+                catch (Exception ex)
+                {
+                    SimpleFileLogger.LogError($"SaveProfilesForModelAsync: Inny błąd podczas zapisywania profili dla modelki '{modelName}' do '{modelProfilePath}'", ex);
+                }
+            } // Koniec lock(fileLock)
         }
 
         public async Task SaveAllProfilesAsync()
         {
             SimpleFileLogger.LogHighLevelInfo("SaveAllProfilesAsync: Rozpoczęto zapisywanie wszystkich profili.");
-            if (!_profiles.Any())
+            List<string> modelNamesToSave;
+            lock (_profiles) // Zabezpiecz odczyt _profiles
             {
-                SimpleFileLogger.LogHighLevelInfo("SaveAllProfilesAsync: Brak profili w pamięci do zapisania.");
-                return;
+                if (!_profiles.Any())
+                {
+                    SimpleFileLogger.LogHighLevelInfo("SaveAllProfilesAsync: Brak profili w pamięci do zapisania.");
+                    return;
+                }
+                modelNamesToSave = _profiles.Select(p => GetModelNameFromCategory(p.CategoryName)).Distinct().ToList();
             }
 
-            var profilesByModel = _profiles.GroupBy(p => GetModelNameFromCategory(p.CategoryName));
-            int modelsSavedCount = 0;
-            foreach (var group in profilesByModel)
+            // Zapisywanie może odbywać się równolegle dla RÓŻNYCH modelek,
+            // ponieważ każda modelka ma swój plik i swoją blokadę.
+            var saveTasks = new List<Task>();
+            foreach (var modelName in modelNamesToSave)
             {
-                await SaveProfilesForModelAsync(group.Key);
-                modelsSavedCount++;
+                // SaveProfilesForModelAsync teraz samo w sobie jest synchroniczne w części plikowej (wewnątrz locka),
+                // ale samo wywołanie tutaj może być Task.Run, jeśli chcemy odciążyć wątek UI.
+                // Jednak SaveProfilesForModelAsync jest już async, więc wystarczy await.
+                saveTasks.Add(SaveProfilesForModelAsync(modelName));
             }
-            SimpleFileLogger.LogHighLevelInfo($"SaveAllProfilesAsync: Zakończono. Zapisano profile dla {modelsSavedCount} modelek.");
+            await Task.WhenAll(saveTasks);
+            SimpleFileLogger.LogHighLevelInfo($"SaveAllProfilesAsync: Zakończono. Próbowano zapisać profile dla {modelNamesToSave.Count} modelek.");
         }
 
         public async Task LoadProfilesAsync()
         {
-            _profiles.Clear();
-            SimpleFileLogger.LogHighLevelInfo($"LoadProfilesAsync: Wyczyczono listę profili w pamięci. Rozpoczęto ładowanie z folderu: {_profilesBaseFolderPath}");
+            List<CategoryProfile> loadedProfiles = new List<CategoryProfile>(); // Tymczasowa lista
+            SimpleFileLogger.LogHighLevelInfo($"LoadProfilesAsync: Rozpoczęto ładowanie z folderu: {_profilesBaseFolderPath}");
 
             if (!Directory.Exists(_profilesBaseFolderPath))
             {
-                SimpleFileLogger.Log($"LoadProfilesAsync: Folder profili nie istnieje: {_profilesBaseFolderPath}. Inicjalizuję pustą listę profili.");
+                SimpleFileLogger.Log($"LoadProfilesAsync: Folder profili nie istnieje: {_profilesBaseFolderPath}.");
+                lock (_profiles) { _profiles.Clear(); } // Wyczyść, jeśli folder nie istnieje
                 return;
             }
 
@@ -292,6 +335,8 @@ namespace CosplayManager.Services
                     {
                         foreach (var profile in fileContent.CharacterProfiles)
                         {
+                            // Walidacja i korekta nazw kategorii (pozostaje bez zmian)
+                            // ... (kod walidacji nazwy) ...
                             string expectedPrefix = $"{fileContent.ModelName} - ";
                             if (!profile.CategoryName.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase) &&
                                 !profile.CategoryName.Equals(fileContent.ModelName, StringComparison.OrdinalIgnoreCase))
@@ -311,8 +356,7 @@ namespace CosplayManager.Services
                             {
                                 profile.CategoryName = $"{fileContent.ModelName} - General";
                             }
-
-                            _profiles.Add(profile);
+                            loadedProfiles.Add(profile); // Dodaj do tymczasowej listy
                             profilesLoadedTotal++;
                         }
                         SimpleFileLogger.Log($"LoadProfilesAsync: Załadowano {fileContent.CharacterProfiles.Count} profili postaci dla modelki '{fileContent.ModelName}' z pliku: {Path.GetFileName(filePath)}");
@@ -331,20 +375,30 @@ namespace CosplayManager.Services
                     SimpleFileLogger.LogError($"LoadProfilesAsync: Błąd podczas ładowania profili z pliku: {Path.GetFileName(filePath)}", ex);
                 }
             }
+
+            lock (_profiles) // Zaktualizuj główną listę profili w sposób bezpieczny wątkowo
+            {
+                _profiles.Clear();
+                _profiles.AddRange(loadedProfiles);
+            }
             SimpleFileLogger.LogHighLevelInfo($"LoadProfilesAsync: Zakończono ładowanie. Przetworzono {filesProcessed} plików. Załadowano łącznie {profilesLoadedTotal} profili kategorii.");
         }
 
         public Tuple<CategoryProfile, double>? SuggestCategory(float[] imageEmbedding, double similarityThreshold = 0.80, string? targetModelName = null)
         {
-            if (imageEmbedding == null || !_profiles.Any())
+            if (imageEmbedding == null) return null;
+
+            List<CategoryProfile> currentProfiles;
+            lock (_profiles) // Odczyt z _profiles również powinien być bezpieczny
             {
-                return null;
+                if (!_profiles.Any()) return null;
+                currentProfiles = new List<CategoryProfile>(_profiles); // Kopiuj listę, aby uniknąć modyfikacji podczas iteracji
             }
 
-            IEnumerable<CategoryProfile> profilesToSearch = _profiles;
+            IEnumerable<CategoryProfile> profilesToSearch = currentProfiles;
             if (!string.IsNullOrWhiteSpace(targetModelName))
             {
-                profilesToSearch = _profiles.Where(p => GetModelNameFromCategory(p.CategoryName).Equals(targetModelName, StringComparison.OrdinalIgnoreCase));
+                profilesToSearch = currentProfiles.Where(p => GetModelNameFromCategory(p.CategoryName).Equals(targetModelName, StringComparison.OrdinalIgnoreCase));
             }
             if (!profilesToSearch.Any())
             {
@@ -376,17 +430,24 @@ namespace CosplayManager.Services
         public async Task<bool> RemoveProfileAsync(string categoryName)
         {
             SimpleFileLogger.LogHighLevelInfo($"RemoveProfileAsync: Próba usunięcia profilu '{categoryName}'.");
-            var profileToRemove = GetProfile(categoryName);
-            if (profileToRemove != null)
+            CategoryProfile? profileToRemove;
+            bool removedFromMemory = false;
+            string modelName = GetModelNameFromCategory(categoryName);
+
+            lock (_profiles) // Zabezpiecz dostęp do _profiles
             {
-                string modelName = GetModelNameFromCategory(categoryName);
-                bool removedFromMemory = _profiles.Remove(profileToRemove);
-                if (removedFromMemory)
+                profileToRemove = GetProfile(categoryName); // Użyj wewnętrznej metody, która nie blokuje
+                if (profileToRemove != null)
                 {
-                    SimpleFileLogger.LogHighLevelInfo($"RemoveProfileAsync: Usunięto profil '{categoryName}' z pamięci.");
-                    await SaveProfilesForModelAsync(modelName);
-                    return true;
+                    removedFromMemory = _profiles.Remove(profileToRemove);
                 }
+            }
+
+            if (removedFromMemory && profileToRemove != null) // Sprawdź też profileToRemove, chociaż powinno być ok
+            {
+                SimpleFileLogger.LogHighLevelInfo($"RemoveProfileAsync: Usunięto profil '{categoryName}' z pamięci.");
+                await SaveProfilesForModelAsync(modelName);
+                return true;
             }
             SimpleFileLogger.Log($"RemoveProfileAsync: Nie znaleziono profilu '{categoryName}' w pamięci do usunięcia.");
             return false;
@@ -401,32 +462,39 @@ namespace CosplayManager.Services
             }
 
             SimpleFileLogger.LogHighLevelInfo($"RemoveAllProfilesForModelAsync: Próba usunięcia wszystkich profili i pliku dla modelki '{modelName}'.");
-
-            int removedCount = _profiles.RemoveAll(p => GetModelNameFromCategory(p.CategoryName).Equals(modelName, StringComparison.OrdinalIgnoreCase));
+            int removedCount;
+            lock (_profiles) // Zabezpiecz dostęp do _profiles
+            {
+                removedCount = _profiles.RemoveAll(p => GetModelNameFromCategory(p.CategoryName).Equals(modelName, StringComparison.OrdinalIgnoreCase));
+            }
             SimpleFileLogger.LogHighLevelInfo($"RemoveAllProfilesForModelAsync: Usunięto {removedCount} profili postaci dla modelki '{modelName}' z pamięci.");
 
             string sanitizedModelName = SanitizeFileName(modelName);
             string modelProfilePath = Path.Combine(_profilesBaseFolderPath, $"{sanitizedModelName}.json");
 
-            if (File.Exists(modelProfilePath))
+            // Blokada dla operacji na pliku
+            object fileLock = _modelFileLocks.GetOrAdd(modelProfilePath, _ => new object());
+            lock (fileLock)
             {
-                try
+                if (File.Exists(modelProfilePath))
                 {
-                    File.Delete(modelProfilePath);
-                    SimpleFileLogger.LogHighLevelInfo($"RemoveAllProfilesForModelAsync: Pomyślnie usunięto plik profilu: {modelProfilePath}");
-                    return true;
+                    try
+                    {
+                        File.Delete(modelProfilePath);
+                        SimpleFileLogger.LogHighLevelInfo($"RemoveAllProfilesForModelAsync: Pomyślnie usunięto plik profilu: {modelProfilePath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        SimpleFileLogger.LogError($"RemoveAllProfilesForModelAsync: Błąd podczas usuwania pliku profilu '{modelProfilePath}'.", ex);
+                        return false; // Błąd usuwania pliku
+                    }
                 }
-                catch (Exception ex)
+                else
                 {
-                    SimpleFileLogger.LogError($"RemoveAllProfilesForModelAsync: Błąd podczas usuwania pliku profilu '{modelProfilePath}'.", ex);
-                    return false;
+                    SimpleFileLogger.Log($"RemoveAllProfilesForModelAsync: Plik profilu '{modelProfilePath}' nie istniał. Nic do usunięcia z dysku.");
                 }
             }
-            else
-            {
-                SimpleFileLogger.Log($"RemoveAllProfilesForModelAsync: Plik profilu '{modelProfilePath}' nie istniał. Nic do usunięcia z dysku.");
-                return removedCount > 0;
-            }
+            return removedCount > 0 || !File.Exists(modelProfilePath); // Zwraca true, jeśli usunięto z pamięci LUB plik nie istnieje
         }
     }
 }
