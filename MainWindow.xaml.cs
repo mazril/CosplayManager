@@ -1,5 +1,5 @@
 // Plik: MainWindow.xaml.cs
-using CosplayManager.Models;
+using CosplayManager.Models; // Dla ProgressReport
 using CosplayManager.Services;
 using CosplayManager.ViewModels;
 using Microsoft.Win32;
@@ -32,13 +32,12 @@ namespace CosplayManager
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            var statusTextBlock = this.FindName("StatusTextBlock") as TextBlock;
+            var statusTextBlock = this.StatusTextBlock; // U¿ywamy x:Name z XAML
             if (statusTextBlock != null) statusTextBlock.Text = "Inicjalizacja aplikacji...";
 
             _settingsServiceInstance = new SettingsService();
-            // UserSettings? loadedSettings = await _settingsServiceInstance.LoadSettingsAsync(); // ViewModel wczyta odpowiednie ustawienia
 
-            _clipService = new ClipServiceHttpClient(); // Tworzony bez œcie¿ek
+            _clipService = new ClipServiceHttpClient();
             _embeddingCacheServiceInstance = new EmbeddingCacheServiceSQLite();
             _imageMetadataService = new ImageMetadataService();
             var fileScanner = new FileScannerService();
@@ -55,8 +54,9 @@ namespace CosplayManager
             {
                 using (var ctsInitVM = new CancellationTokenSource())
                 {
+                    // Poprawione wywo³anie - delegat teraz akceptuje token i progress
                     await _viewModelInstance.RunLongOperation(
-                        async (token) => await _viewModelInstance.InitializeAsync(token),
+                        async (token, progress) => await _viewModelInstance.InitializeAsync(token, progress),
                         "Inicjalizacja ViewModelu"
                     );
                 }
@@ -92,12 +92,17 @@ namespace CosplayManager
                               "B³¹d Po³¹czenia z Serwerem AI", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
-            var testClipMenuItem = this.FindName("TestClipMenuItem") as MenuItem;
+            var testClipMenuItem = this.TestClipMenuItem; // U¿ywamy x:Name
             if (testClipMenuItem != null) testClipMenuItem.IsEnabled = serverConnectedAndVerified;
 
-            if (statusTextBlock != null && (statusTextBlock.Text.EndsWith("...") || statusTextBlock.Text.Contains("Inicjalizacja ViewModelu - Zakoñczono.")))
+            if (statusTextBlock != null && (_viewModelInstance?.ProgressStatusText.EndsWith("...") == true || _viewModelInstance?.ProgressStatusText.Contains("Inicjalizacja ViewModelu - Zakoñczono.") == true))
             {
-                statusTextBlock.Text = serverConnectedAndVerified ? "Aplikacja gotowa." : "Aplikacja gotowa (funkcje AI niedostêpne z powodu braku po³¹czenia z serwerem).";
+                // Po inicjalizacji, ProgressStatusText powinien byæ ju¿ ustawiony przez RunLongOperation
+                // Jeœli nie, mo¿na by ustawiæ domyœlny status.
+                if (string.IsNullOrEmpty(_viewModelInstance?.ProgressStatusText) || _viewModelInstance.ProgressStatusText.EndsWith("..."))
+                {
+                    _viewModelInstance.ProgressStatusText = serverConnectedAndVerified ? "Aplikacja gotowa." : "Aplikacja gotowa (funkcje AI niedostêpne).";
+                }
             }
         }
 
@@ -110,6 +115,7 @@ namespace CosplayManager
             }
             _clipService?.Dispose();
             SimpleFileLogger.LogHighLevelInfo("MainWindow: Zasoby ClipServiceHttpClient zwolnione.");
+            // EmbeddingCacheServiceSQLite nie ma obecnie metody Dispose do wywo³ania, ale jeœli by mia³a, to tutaj.
         }
 
         private void ExitMenuItem_Click(object sender, RoutedEventArgs e)
@@ -130,7 +136,6 @@ namespace CosplayManager
                 return;
             }
 
-            // SprawdŸ po³¹czenie przed testem
             if (!await _clipService.EnsureServerConnectionAsync())
             {
                 MessageBox.Show("Nie uda³o siê po³¹czyæ z serwerem AI (CLIP) lub serwer nie jest gotowy.\nUpewnij siê, ¿e serwer Pythona jest uruchomiony rêcznie.",
@@ -147,15 +152,21 @@ namespace CosplayManager
             if (openFileDialog.ShowDialog() == true)
             {
                 string imageFilePath = openFileDialog.FileName;
-                var statusTextBlock = this.FindName("StatusTextBlock") as TextBlock;
-                if (statusTextBlock != null) statusTextBlock.Text = $"Analizowanie obrazu: {Path.GetFileName(imageFilePath)}...";
+                var statusTextBlock = this.StatusTextBlock;
+                if (statusTextBlock != null && _viewModelInstance != null) _viewModelInstance.ProgressStatusText = $"Analizowanie obrazu: {Path.GetFileName(imageFilePath)}...";
                 SimpleFileLogger.LogHighLevelInfo($"TestClipButton: Próba analizy obrazu: {imageFilePath}");
 
                 try
                 {
-                    float[]? embedding = await _profileServiceInstance.GetImageEmbeddingAsync( // To wywo³a GetImageEmbeddingFromPathAsync z ClipService
-                        new Models.ImageFileEntry { FilePath = imageFilePath, FileLastModifiedUtc = File.GetLastWriteTimeUtc(imageFilePath), FileSize = new FileInfo(imageFilePath).Length }
-                    );
+                    var imageEntry = await _imageMetadataService.ExtractMetadataAsync(imageFilePath);
+                    if (imageEntry == null)
+                    {
+                        MessageBox.Show("Nie uda³o siê odczytaæ metadanych obrazu.", "B³¹d odczytu obrazu", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        if (statusTextBlock != null && _viewModelInstance != null) _viewModelInstance.ProgressStatusText = $"B³¹d odczytu metadanych dla '{Path.GetFileName(imageFilePath)}'.";
+                        return;
+                    }
+
+                    float[]? embedding = await _profileServiceInstance.GetImageEmbeddingAsync(imageEntry);
 
 
                     if (embedding != null && embedding.Any())
@@ -164,20 +175,20 @@ namespace CosplayManager
                                          $"D³ugoœæ wektora: {embedding.Length}\n" +
                                          $"Fragment: [{string.Join(", ", embedding.Take(5).Select(f => f.ToString("F4")))} ...]";
                         MessageBox.Show(message, "Analiza CLIP Zakoñczona", MessageBoxButton.OK, MessageBoxImage.Information);
-                        if (statusTextBlock != null) statusTextBlock.Text = $"Analiza '{Path.GetFileName(imageFilePath)}' zakoñczona.";
+                        if (statusTextBlock != null && _viewModelInstance != null) _viewModelInstance.ProgressStatusText = $"Analiza '{Path.GetFileName(imageFilePath)}' zakoñczona.";
                         SimpleFileLogger.LogHighLevelInfo($"TestClipButton: Sukces. Obraz: {Path.GetFileName(imageFilePath)}, D³. wektora: {embedding.Length}");
                     }
                     else
                     {
                         MessageBox.Show("Nie uda³o siê uzyskaæ wektora cech dla obrazu (wynik null lub pusty). Upewnij siê, ¿e serwer AI dzia³a i odpowiada.", "B³¹d Analizy CLIP", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        if (statusTextBlock != null) statusTextBlock.Text = $"B³¹d analizy '{Path.GetFileName(imageFilePath)}'.";
+                        if (statusTextBlock != null && _viewModelInstance != null) _viewModelInstance.ProgressStatusText = $"B³¹d analizy '{Path.GetFileName(imageFilePath)}'.";
                         SimpleFileLogger.LogWarning($"TestClipButton: Nie uda³o siê uzyskaæ wektora cech (null/pusty) dla {Path.GetFileName(imageFilePath)}");
                     }
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show($"Wyst¹pi³ b³¹d podczas analizy CLIP: {ex.Message}", "B³¹d Analizy CLIP", MessageBoxButton.OK, MessageBoxImage.Error);
-                    if (statusTextBlock != null) statusTextBlock.Text = "B³¹d podczas analizy CLIP.";
+                    if (statusTextBlock != null && _viewModelInstance != null) _viewModelInstance.ProgressStatusText = "B³¹d podczas analizy CLIP.";
                     SimpleFileLogger.LogError($"TestClipButton: B³¹d podczas analizy obrazu {Path.GetFileName(imageFilePath)}", ex);
                 }
             }
@@ -188,6 +199,12 @@ namespace CosplayManager
             if (_viewModelInstance != null && e.NewValue is CategoryProfile selectedCharacterProfile)
             {
                 _viewModelInstance.SelectedProfile = selectedCharacterProfile;
+            }
+            else if (_viewModelInstance != null && e.NewValue is ModelDisplayViewModel)
+            {
+                // Jeœli wybrano wêze³ modelki, mo¿na wyczyœciæ SelectedProfile lub ustawiæ na null,
+                // aby edytor profilu nie pokazywa³ danych ostatnio wybranej postaci.
+                // _viewModelInstance.SelectedProfile = null; // Opcjonalne, zale¿y od po¿¹danego zachowania
             }
         }
     }

@@ -9,11 +9,11 @@
                  xmlns:viewmodels="clr-namespace:CosplayManager.ViewModels"
                  xmlns:models="clr-namespace:CosplayManager.Models"
                  xmlns:converters="clr-namespace:CosplayManager.Converters"
-                 xmlns:b="http://schemas.microsoft.com/xaml/behaviors" 
+                 xmlns:b="http://schemas.microsoft.com/xaml/behaviors"
                  mc:Ignorable="d"
                  Title="Cosplay Manager Deluxe" Height="768" Width="1366"
                  GlowBrush="{DynamicResource MahApps.Brushes.Accent}"
-                 BorderThickness="1" 
+                 BorderThickness="1"
                  WindowStartupLocation="CenterScreen"
                  d:DataContext="{d:DesignInstance Type=viewmodels:MainWindowViewModel, IsDesignTimeCreatable=False}">
 
@@ -321,23 +321,31 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                     </Grid>
                 </ItemsPanelTemplate>
             </StatusBar.ItemsPanel>
 
-            <StatusBarItem Grid.Column="0">
-                <TextBlock x:Name="StatusTextBlock" Text="{Binding StatusMessage, Mode=OneWay}" VerticalAlignment="Center"/>
+            <StatusBarItem Grid.Column="0" VerticalContentAlignment="Center">
+                <TextBlock x:Name="StatusTextBlock" Text="{Binding ProgressStatusText, Mode=OneWay, FallbackValue='Gotowy.'}" VerticalAlignment="Center" Margin="5,0"/>
             </StatusBarItem>
 
-            <StatusBarItem Grid.Column="1" HorizontalAlignment="Right">
-                <ProgressBar Width="150" Height="15" Margin="5,0"
-                             IsIndeterminate="True" 
-                             Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}, FallbackValue=Collapsed}"/>
+            <StatusBarItem Grid.Column="1" VerticalContentAlignment="Center" 
+                           Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <ProgressBar Width="200" Height="18" Margin="5,0"
+                             Value="{Binding CurrentProgress}"
+                             Maximum="{Binding MaximumProgress}"
+                             IsIndeterminate="{Binding IsProgressIndeterminate}"/>
             </StatusBarItem>
 
-            <StatusBarItem Grid.Column="2" HorizontalAlignment="Right">
-                <Button Content="Anuluj" Margin="0,0,5,0" Padding="10,2"
+            <StatusBarItem Grid.Column="2" VerticalContentAlignment="Center"
+                           Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <TextBlock Text="{Binding ProcessingSpeedText, Mode=OneWay, FallbackValue=''}" Margin="5,0" VerticalAlignment="Center"/>
+            </StatusBarItem>
+
+            <StatusBarItem Grid.Column="3" HorizontalAlignment="Right" VerticalContentAlignment="Center">
+                <Button Content="Anuluj" Margin="5,0" Padding="10,2"
                         Command="{Binding CancelCurrentOperationCommand}"
                         Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"/>
             </StatusBarItem>

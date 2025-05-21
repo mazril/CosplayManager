@@ -3,25 +3,26 @@ using Microsoft.Data.Sqlite;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text.Json; // Nadal potrzebne do serializacji/deserializacji float[] do/z BLOB
+using System.Linq; // Dodano dla Any()
+using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CosplayManager.Services
 {
-    public class EmbeddingCacheEntry // Przeniesiono tu dla spójności lub upewnij się, że jest dostępne
-    {
-        public float[] Embedding { get; set; }
-        public DateTime LastModifiedUtc { get; set; }
-        public long FileSize { get; set; }
-    }
+    // Definicja EmbeddingCacheEntry powinna być w Models lub tutaj, jeśli tylko tu używana.
+    // Zakładam, że jest w CosplayManager.Models, więc usunąłem duplikat.
+    // Jeśli nie, należy ją tu przywrócić lub przenieść do Models.
+    // public class EmbeddingCacheEntry { ... } 
 
     public class EmbeddingCacheServiceSQLite : IDisposable
     {
         private readonly string _databasePath;
-        private readonly object _dbLock = new object(); // Prosta blokada dla operacji na bazie danych
+        private readonly object _dbLock = new object();
 
         private const string CacheDbFileName = "embedding_cache.db";
         private const string TableName = "Embeddings";
+        private static readonly TimeSpan DateComparisonTolerance = TimeSpan.FromSeconds(2); // Tolerancja dla porównania daty modyfikacji
 
         public EmbeddingCacheServiceSQLite(string cacheDirectory = "Cache")
         {
@@ -57,29 +58,21 @@ namespace CosplayManager.Services
                         command.CommandText = createTableQuery;
                         command.ExecuteNonQuery();
                     }
-                    // Opcjonalnie: Dodaj indeksy dla optymalizacji, jeśli potrzebne
-                    // np. CREATE INDEX IF NOT EXISTS IDX_LastModifiedUtc ON Embeddings (LastModifiedUtc);
                 }
             }
             SimpleFileLogger.Log($"Database initialized/checked at {_databasePath}");
         }
 
-        public async Task<float[]?> GetOrUpdateEmbeddingAsync(
-            string imagePath,
-            // ShardKey nie jest już potrzebny, kluczem jest imagePath
-            DateTime currentFileLastModifiedUtc,
-            long currentFileSize,
-            Func<string, Task<float[]?>> embeddingProvider)
+        public Task<float[]?> GetFromCacheOnlyAsync(string imagePath, DateTime currentFileLastModifiedUtc, long currentFileSize, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(imagePath))
             {
-                SimpleFileLogger.LogWarning($"GetOrUpdateEmbeddingAsync (SQLite): Invalid imagePath.");
-                return null;
+                SimpleFileLogger.LogWarning($"GetFromCacheOnlyAsync (SQLite): Invalid imagePath.");
+                return Task.FromResult<float[]?>(null);
             }
+            cancellationToken.ThrowIfCancellationRequested();
 
-            EmbeddingCacheEntry? cachedEntry = null;
-            bool entryFoundAndValid = false;
-
+            float[]? embedding = null;
             lock (_dbLock)
             {
                 using (var connection = new SqliteConnection($"Data Source={_databasePath}"))
@@ -103,68 +96,103 @@ namespace CosplayManager.Services
                                     byte[] embeddingBlob = (byte[])reader["Embedding"];
                                     long lastModifiedTicks = reader.GetInt64(reader.GetOrdinal("LastModifiedUtc"));
                                     long fileSize = reader.GetInt64(reader.GetOrdinal("FileSize"));
+                                    var cachedLastModifiedUtc = new DateTime(lastModifiedTicks, DateTimeKind.Utc);
 
-                                    cachedEntry = new EmbeddingCacheEntry
-                                    {
-                                        Embedding = JsonSerializer.Deserialize<float[]>(embeddingBlob), // Deserializacja z BLOB
-                                        LastModifiedUtc = new DateTime(lastModifiedTicks, DateTimeKind.Utc),
-                                        FileSize = fileSize
-                                    };
+                                    bool sizeMatches = fileSize == currentFileSize;
+                                    bool dateMatches = Math.Abs((cachedLastModifiedUtc - currentFileLastModifiedUtc).TotalSeconds) < DateComparisonTolerance.TotalSeconds;
 
-                                    if (cachedEntry.LastModifiedUtc == currentFileLastModifiedUtc &&
-                                        cachedEntry.FileSize == currentFileSize &&
-                                        cachedEntry.Embedding != null)
+                                    var deserializedEmbedding = JsonSerializer.Deserialize<float[]>(embeddingBlob);
+
+                                    if (sizeMatches && dateMatches && deserializedEmbedding != null && deserializedEmbedding.Any())
                                     {
-                                        SimpleFileLogger.Log($"SQLite Cache hit for: {imagePath}");
-                                        entryFoundAndValid = true;
+                                        SimpleFileLogger.Log($"SQLite Cache hit (GetFromCacheOnlyAsync) for: {imagePath}");
+                                        embedding = deserializedEmbedding;
                                     }
                                     else
                                     {
-                                        SimpleFileLogger.Log($"SQLite Cache invalid for: {imagePath}. DBMod: {cachedEntry.LastModifiedUtc}, CurrentMod: {currentFileLastModifiedUtc}, DBSize: {cachedEntry.FileSize}, CurrentSize: {currentFileSize}");
+                                        SimpleFileLogger.Log($"SQLite Cache invalid (GetFromCacheOnlyAsync) for: {imagePath}. " +
+                                            $"SizeMatch: {sizeMatches} (DB: {fileSize}, Current: {currentFileSize}). " +
+                                            $"DateMatch ({DateComparisonTolerance.TotalSeconds}s tol.): {dateMatches} (DB: {cachedLastModifiedUtc:o}, Current: {currentFileLastModifiedUtc:o}). " +
+                                            $"EmbeddingNullOrEmpty: {deserializedEmbedding == null || !deserializedEmbedding.Any()}");
                                     }
                                 }
                                 catch (Exception ex)
                                 {
-                                    SimpleFileLogger.LogError($"Error deserializing embedding from DB for {imagePath}", ex);
-                                    cachedEntry = null; // Traktuj jako cache miss
+                                    SimpleFileLogger.LogError($"Error deserializing embedding from DB (GetFromCacheOnlyAsync) for {imagePath}", ex);
                                 }
                             }
                         }
                     }
                 }
             }
+            return Task.FromResult(embedding);
+        }
 
-            if (entryFoundAndValid && cachedEntry?.Embedding != null)
+        public Task StoreInCacheAsync(string imagePath, DateTime fileLastModifiedUtc, long fileSize, float[] embedding, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(imagePath) || embedding == null || !embedding.Any())
             {
-                return cachedEntry.Embedding;
+                SimpleFileLogger.LogWarning($"StoreInCacheAsync (SQLite): Invalid imagePath or empty embedding. Not caching for {imagePath}.");
+                return Task.CompletedTask;
             }
+            cancellationToken.ThrowIfCancellationRequested();
 
-            SimpleFileLogger.Log($"SQLite Cache miss or invalid for: {imagePath}. Fetching new embedding.");
-            float[]? newEmbedding = await embeddingProvider(imagePath);
-
-            if (newEmbedding != null)
+            lock (_dbLock)
             {
-                lock (_dbLock)
+                using (var connection = new SqliteConnection($"Data Source={_databasePath}"))
                 {
-                    using (var connection = new SqliteConnection($"Data Source={_databasePath}"))
+                    connection.Open();
+                    string upsertQuery = $@"
+                        INSERT OR REPLACE INTO {TableName} (ImagePath, Embedding, LastModifiedUtc, FileSize)
+                        VALUES (@ImagePath, @Embedding, @LastModifiedUtc, @FileSize);";
+                    using (var command = connection.CreateCommand())
                     {
-                        connection.Open();
-                        // Użyj UPSERT (INSERT OR REPLACE) do wstawienia lub aktualizacji wpisu
-                        string upsertQuery = $@"
-                            INSERT OR REPLACE INTO {TableName} (ImagePath, Embedding, LastModifiedUtc, FileSize)
-                            VALUES (@ImagePath, @Embedding, @LastModifiedUtc, @FileSize);";
-                        using (var command = connection.CreateCommand())
-                        {
-                            command.CommandText = upsertQuery;
-                            command.Parameters.AddWithValue("@ImagePath", imagePath);
-                            command.Parameters.AddWithValue("@Embedding", JsonSerializer.SerializeToUtf8Bytes(newEmbedding)); // Serializacja do BLOB
-                            command.Parameters.AddWithValue("@LastModifiedUtc", currentFileLastModifiedUtc.Ticks);
-                            command.Parameters.AddWithValue("@FileSize", currentFileSize);
-                            command.ExecuteNonQuery();
-                            SimpleFileLogger.Log($"Saved/Updated embedding to SQLite for: {imagePath}");
-                        }
+                        command.CommandText = upsertQuery;
+                        command.Parameters.AddWithValue("@ImagePath", imagePath);
+                        command.Parameters.AddWithValue("@Embedding", JsonSerializer.SerializeToUtf8Bytes(embedding));
+                        command.Parameters.AddWithValue("@LastModifiedUtc", fileLastModifiedUtc.Ticks);
+                        command.Parameters.AddWithValue("@FileSize", fileSize);
+                        command.ExecuteNonQuery();
+                        SimpleFileLogger.Log($"Saved/Updated embedding to SQLite (StoreInCacheAsync) for: {imagePath}");
                     }
                 }
+            }
+            return Task.CompletedTask;
+        }
+
+        public async Task<float[]?> GetOrUpdateEmbeddingAsync(
+            string imagePath,
+            DateTime currentFileLastModifiedUtc,
+            long currentFileSize,
+            Func<string, CancellationToken, Task<float[]?>> embeddingProvider, // Zmieniony Func
+            CancellationToken cancellationToken = default) // Dodany CancellationToken
+        {
+            if (string.IsNullOrWhiteSpace(imagePath))
+            {
+                SimpleFileLogger.LogWarning($"GetOrUpdateEmbeddingAsync (SQLite): Invalid imagePath.");
+                return null;
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+
+            float[]? cachedEmbedding = await GetFromCacheOnlyAsync(imagePath, currentFileLastModifiedUtc, currentFileSize, cancellationToken);
+            if (cachedEmbedding != null)
+            {
+                return cachedEmbedding;
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+
+            SimpleFileLogger.Log($"SQLite Cache miss or invalid for: {imagePath}. Fetching new embedding.");
+            // Wywołaj dostawcę embeddingu, przekazując CancellationToken
+            float[]? newEmbedding = await embeddingProvider(imagePath, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (newEmbedding != null && newEmbedding.Any()) // Sprawdź, czy embedding nie jest pusty
+            {
+                await StoreInCacheAsync(imagePath, currentFileLastModifiedUtc, currentFileSize, newEmbedding, cancellationToken);
+            }
+            else
+            {
+                SimpleFileLogger.LogWarning($"Embedding provider returned null or empty embedding for: {imagePath}. Not caching.");
             }
             return newEmbedding;
         }
@@ -182,23 +210,15 @@ namespace CosplayManager.Services
                         command.CommandText = deleteQuery;
                         command.ExecuteNonQuery();
                     }
-                    // Opcjonalnie: VACUUM, aby zmniejszyć rozmiar pliku bazy danych po usunięciu wielu wierszy
-                    // string vacuumQuery = "VACUUM;";
-                    // using (var command = connection.CreateCommand()) { command.CommandText = vacuumQuery; command.ExecuteNonQuery(); }
+                    string vacuumQuery = $"VACUUM {TableName};"; // VACUUM dla konkretnej tabeli
+                    using (var command = connection.CreateCommand()) { command.CommandText = vacuumQuery; command.ExecuteNonQuery(); }
                 }
             }
-            SimpleFileLogger.LogHighLevelInfo("SQLite embedding cache cleared (all entries deleted).");
+            SimpleFileLogger.LogHighLevelInfo($"SQLite embedding cache cleared ({TableName} table).");
         }
 
-        // Implementacja IDisposable, jeśli jest potrzebna do zarządzania połączeniem
-        // W przypadku SqliteConnection używanego w blokach `using`, jawne Dispose nie jest krytyczne
-        // dla samej klasy serwisu, ale dobra praktyka.
         public void Dispose()
         {
-            // Obecnie połączenia są otwierane i zamykane w każdej metodzie, więc
-            // dedykowane Dispose dla klasy może nie być konieczne, chyba że
-            // chcielibyśmy utrzymać jedno połączenie otwarte dłużej.
-            // Na razie pozostawiam puste.
             GC.SuppressFinalize(this);
         }
     }

@@ -20,7 +20,7 @@ namespace CosplayManager.Services
 
         public ClipServiceHttpClient()
         {
-            _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
+            _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(300) }; // Zwiększony timeout dla potencjalnie dłuższych operacji wsadowych
             SimpleFileLogger.Log("ClipServiceHttpClient: Konstruktor (tryb łączenia z istniejącym, zewnętrznym serwerem).");
         }
 
@@ -46,7 +46,7 @@ namespace CosplayManager.Services
             {
                 SimpleFileLogger.Log($"IsServerRunningAsync: Sprawdzanie endpointu /health na {_baseAddress}");
                 using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseAddress}/health");
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15)); // Zwiększony timeout dla health check
                 using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 
                 if (response.IsSuccessStatusCode)
@@ -59,16 +59,14 @@ namespace CosplayManager.Services
                         {
                             var healthStatus = JsonSerializer.Deserialize<JsonElement>(content);
                             JsonElement statusElement;
-                            JsonElement embedderStatusElement; // Zadeklaruj tutaj
+                            JsonElement embedderStatusElement;
 
                             bool statusOk = healthStatus.TryGetProperty("status", out statusElement) &&
                                             statusElement.ValueKind == JsonValueKind.String &&
                                             statusElement.GetString()?.ToLowerInvariant() == "ok";
 
-                            // --- POPRAWKA BŁĘDU CS0165 ---
                             bool embedderInitialized = healthStatus.TryGetProperty("embedder_fully_initialized", out embedderStatusElement) &&
                                                        embedderStatusElement.ValueKind == JsonValueKind.True;
-                            // -----------------------------
 
                             if (statusOk && embedderInitialized)
                             {
@@ -109,7 +107,7 @@ namespace CosplayManager.Services
             return false;
         }
 
-        public async Task<float[]?> GetImageEmbeddingFromPathAsync(string imagePath)
+        public async Task<float[]?> GetImageEmbeddingFromPathAsync(string imagePath, CancellationToken cancellationToken = default)
         {
             if (!_isServerConfirmedRunning)
             {
@@ -135,13 +133,15 @@ namespace CosplayManager.Services
             try
             {
                 SimpleFileLogger.Log($"GetImageEmbeddingFromPathAsync: Próba wysłania żądania POST dla: {imagePath} do {endpoint}");
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-                HttpResponseMessage response = await _httpClient.PostAsJsonAsync(endpoint, payload, cts.Token);
+                // Użyj przekazanego CancellationToken lub domyślnego (jeśli nie ma) z rozsądnym timeoutem
+                var effectiveCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, new CancellationTokenSource(TimeSpan.FromSeconds(120)).Token);
+
+                HttpResponseMessage response = await _httpClient.PostAsJsonAsync(endpoint, payload, effectiveCts.Token);
                 SimpleFileLogger.Log($"GetImageEmbeddingFromPathAsync: Otrzymano odpowiedź dla: {imagePath}. Status: {response.StatusCode}");
 
                 if (response.IsSuccessStatusCode)
                 {
-                    var result = await response.Content.ReadFromJsonAsync<EmbeddingResponse>(cancellationToken: cts.Token);
+                    var result = await response.Content.ReadFromJsonAsync<EmbeddingResponse>(cancellationToken: effectiveCts.Token);
                     if (result?.embedding != null && result.embedding.Any())
                     {
                         SimpleFileLogger.Log($"GetImageEmbeddingFromPathAsync: Pomyślnie uzyskano embedding dla: {imagePath}, długość: {result.embedding.Count}");
@@ -149,14 +149,14 @@ namespace CosplayManager.Services
                     }
                     else
                     {
-                        string errorContent = await response.Content.ReadAsStringAsync(cts.Token);
+                        string errorContent = await response.Content.ReadAsStringAsync(effectiveCts.Token);
                         string detailMessage = result?.error ?? errorContent;
                         SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: Odpowiedź serwera OK, ale brak embeddingu lub błąd w odpowiedzi dla {imagePath}. Szczegóły: {detailMessage}", null);
                     }
                 }
                 else
                 {
-                    string errorContent = await response.Content.ReadAsStringAsync(cts.Token);
+                    string errorContent = await response.Content.ReadAsStringAsync(effectiveCts.Token);
                     SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: Błąd serwera ({response.StatusCode}) dla {imagePath}. Odpowiedź: {errorContent}", null);
                 }
             }
@@ -165,7 +165,12 @@ namespace CosplayManager.Services
                 SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: HttpRequestException dla {imagePath} do {endpoint}: {ex.Message}. Sprawdź, czy serwer Pythona działa i nasłuchuje na {_baseAddress}", ex);
                 _isServerConfirmedRunning = false;
             }
-            catch (TaskCanceledException tex)
+            catch (TaskCanceledException tex) when (cancellationToken.IsCancellationRequested)
+            {
+                SimpleFileLogger.LogWarning($"GetImageEmbeddingFromPathAsync: Operacja anulowana przez użytkownika dla {imagePath}.");
+                throw; // Rzuć dalej, aby operacja nadrzędna mogła to obsłużyć
+            }
+            catch (TaskCanceledException tex) // Timeout
             {
                 SimpleFileLogger.LogError($"GetImageEmbeddingFromPathAsync: Timeout podczas żądania embeddingu dla {imagePath} do {endpoint}: {tex.Message}", tex);
                 _isServerConfirmedRunning = false;
@@ -182,6 +187,83 @@ namespace CosplayManager.Services
             return null;
         }
 
+        public async Task<List<float[]>?> GetImageEmbeddingsBatchAsync(List<string> imagePaths, CancellationToken cancellationToken = default)
+        {
+            if (!_isServerConfirmedRunning)
+            {
+                SimpleFileLogger.LogWarning($"GetImageEmbeddingsBatchAsync: Połączenie z serwerem CLIP nie jest potwierdzone. Próba ponownego sprawdzenia.");
+                if (!await EnsureServerConnectionAsync())
+                {
+                    SimpleFileLogger.LogError($"GetImageEmbeddingsBatchAsync: Serwer CLIP nadal nie jest dostępny. Nie można uzyskać embeddingów wsadowo.", null);
+                    return null;
+                }
+            }
+
+            if (imagePaths == null || !imagePaths.Any())
+            {
+                SimpleFileLogger.Log("GetImageEmbeddingsBatchAsync: Lista ścieżek obrazów jest pusta lub null.");
+                return new List<float[]>();
+            }
+
+            var payload = new { paths = imagePaths };
+            string endpoint = $"{_baseAddress}/get_image_embeddings_batch";
+            SimpleFileLogger.Log($"GetImageEmbeddingsBatchAsync: Przygotowano payload dla {imagePaths.Count} obrazów. Adres docelowy: {endpoint}");
+
+            try
+            {
+                var effectiveCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, new CancellationTokenSource(TimeSpan.FromMinutes(Math.Max(5, imagePaths.Count * 0.5))).Token); // Dynamiczny timeout, min 5 minut
+
+                HttpResponseMessage response = await _httpClient.PostAsJsonAsync(endpoint, payload, effectiveCts.Token);
+                SimpleFileLogger.Log($"GetImageEmbeddingsBatchAsync: Otrzymano odpowiedź dla paczki {imagePaths.Count} obrazów. Status: {response.StatusCode}");
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var result = await response.Content.ReadFromJsonAsync<EmbeddingsBatchResponse>(cancellationToken: effectiveCts.Token);
+                    if (result?.embeddings != null && result.embeddings.Count == imagePaths.Count)
+                    {
+                        SimpleFileLogger.Log($"GetImageEmbeddingsBatchAsync: Pomyślnie uzyskano {result.embeddings.Count} embeddingów.");
+                        return result.embeddings.Select(e => e.ToArray()).ToList();
+                    }
+                    else
+                    {
+                        string errorContent = await response.Content.ReadAsStringAsync(effectiveCts.Token);
+                        SimpleFileLogger.LogError($"GetImageEmbeddingsBatchAsync: Odpowiedź serwera OK, ale liczba embeddingów ({result?.embeddings?.Count}) niezgodna z liczbą żądanych ({imagePaths.Count}) lub błąd. Szczegóły: {errorContent}", null);
+                    }
+                }
+                else
+                {
+                    string errorContent = await response.Content.ReadAsStringAsync(effectiveCts.Token);
+                    SimpleFileLogger.LogError($"GetImageEmbeddingsBatchAsync: Błąd serwera ({response.StatusCode}) dla paczki. Odpowiedź: {errorContent}", null);
+                }
+            }
+            catch (HttpRequestException ex)
+            {
+                SimpleFileLogger.LogError($"GetImageEmbeddingsBatchAsync: HttpRequestException dla paczki do {endpoint}: {ex.Message}.", ex);
+                _isServerConfirmedRunning = false;
+            }
+            catch (TaskCanceledException tex) when (cancellationToken.IsCancellationRequested)
+            {
+                SimpleFileLogger.LogWarning($"GetImageEmbeddingsBatchAsync: Operacja anulowana przez użytkownika dla paczki.");
+                throw;
+            }
+            catch (TaskCanceledException tex) // Timeout
+            {
+                SimpleFileLogger.LogError($"GetImageEmbeddingsBatchAsync: Timeout podczas żądania embeddingów wsadowo do {endpoint}: {tex.Message}", tex);
+                _isServerConfirmedRunning = false;
+            }
+            catch (JsonException jsonEx)
+            {
+                SimpleFileLogger.LogError($"GetImageEmbeddingsBatchAsync: Błąd deserializacji JSON dla paczki z {endpoint}: {jsonEx.Message}", jsonEx);
+            }
+            catch (Exception ex)
+            {
+                SimpleFileLogger.LogError($"GetImageEmbeddingsBatchAsync: Nieoczekiwany błąd dla paczki do {endpoint}: {ex.Message}", ex);
+                _isServerConfirmedRunning = false;
+            }
+            return null;
+        }
+
+
         public void Dispose()
         {
             SimpleFileLogger.LogHighLevelInfo("ClipServiceHttpClient.Dispose: Zwalnianie zasobów HttpClient.");
@@ -192,6 +274,12 @@ namespace CosplayManager.Services
         private class EmbeddingResponse
         {
             public List<float>? embedding { get; set; }
+            public string? error { get; set; } // Dodane na wypadek, gdyby serwer zwracał błąd w ciele JSON
+        }
+
+        private class EmbeddingsBatchResponse
+        {
+            public List<List<float>>? embeddings { get; set; }
             public string? error { get; set; }
         }
     }
