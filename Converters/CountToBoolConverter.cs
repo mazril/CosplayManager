@@ -1,5 +1,4 @@
-﻿// Plik: Converters/CountToBoolConverter.cs
-using System;
+﻿using System;
 using System.Globalization;
 using System.Windows.Data;
 

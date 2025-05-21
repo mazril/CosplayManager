@@ -1,6 +1,5 @@
-// Plik: CosplayManager/Models/ImageFileEntry.cs
 using CosplayManager.Services;
-using System; // Dodane dla Uri
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
@@ -123,8 +122,6 @@ namespace CosplayManager.Models
 
         public async Task<BitmapImage?> LoadThumbnailAsync(int decodePixelWidth = 150)
         {
-            // Jeśli miniaturka już istnieje i jest poprawna (plik nadal istnieje), zwróć ją.
-            // Można dodać opcjonalny parametr "forceReload", jeśli chcemy wymusić przeładowanie.
             if (this.Thumbnail != null && !string.IsNullOrWhiteSpace(FilePath) && File.Exists(FilePath))
             {
                 return this.Thumbnail;
@@ -136,7 +133,6 @@ namespace CosplayManager.Models
                 {
                     SimpleFileLogger.LogWarning($"ImageFileEntry.LoadThumbnailAsync: Plik źródłowy nie istnieje dla '{FilePath}', miniatura nie zostanie załadowana.");
                 }
-                // Upewnij się, że Thumbnail jest null, jeśli plik nie istnieje lub ścieżka jest pusta
                 if (this.Thumbnail != null)
                 {
                     this.Thumbnail = null;
@@ -144,16 +140,10 @@ namespace CosplayManager.Models
                 return null;
             }
 
-            // Proste zabezpieczenie przed wielokrotnym ładowaniem tej samej miniaturki jednocześnie.
-            // Bardziej zaawansowane mechanizmy mogłyby używać SemaphoreSlim.
             if (IsLoadingThumbnail)
             {
-                // Można by poczekać na zakończenie poprzedniego ładowania, np. używając TaskCompletionSource,
-                // ale dla uproszczenia, jeśli już ładujemy, to zwracamy obecny stan (prawdopodobnie null lub stara miniaturka).
-                // Jeśli Thumbnail jest już ustawiony, to pierwszy warunek if (this.Thumbnail != null) by to obsłużył.
-                // Więc tutaj prawdopodobnie Thumbnail jest null.
                 SimpleFileLogger.Log($"ImageFileEntry.LoadThumbnailAsync: Już w trakcie ładowania dla '{FilePath}'.");
-                return this.Thumbnail; // Zwróć aktualną wartość, która może być null
+                return this.Thumbnail;
             }
 
             IsLoadingThumbnail = true;
@@ -164,7 +154,7 @@ namespace CosplayManager.Models
                 {
                     try
                     {
-                        if (!File.Exists(FilePath)) // Ponowne sprawdzenie w wątku roboczym
+                        if (!File.Exists(FilePath))
                         {
                             SimpleFileLogger.LogWarning($"ImageFileEntry.LoadThumbnailAsync (Task.Run): Plik nie znaleziony '{FilePath}' przed utworzeniem BitmapImage.");
                             return null;
@@ -173,10 +163,10 @@ namespace CosplayManager.Models
                         BitmapImage bmp = new BitmapImage();
                         bmp.BeginInit();
                         bmp.UriSource = new Uri(FilePath);
-                        bmp.CacheOption = BitmapCacheOption.OnLoad; // Ładuj całą miniaturkę od razu
-                        bmp.DecodePixelWidth = decodePixelWidth;   // Ustaw szerokość dekodowania
+                        bmp.CacheOption = BitmapCacheOption.OnLoad;
+                        bmp.DecodePixelWidth = decodePixelWidth;
                         bmp.EndInit();
-                        bmp.Freeze(); // Zamroź obiekt, aby można było go używać w innych wątkach (np. UI)
+                        bmp.Freeze();
                         return bmp;
                     }
                     catch (FileNotFoundException)
@@ -191,22 +181,18 @@ namespace CosplayManager.Models
                     }
                 });
 
-                // Ustaw właściwość Thumbnail tylko jeśli ładowanie się powiodło
-                // i jesteśmy w oryginalnym kontekście synchronizacji (jeśli to konieczne)
-                // lub po prostu ustawiamy ją, a PropertyChanged zadba o resztę.
                 this.Thumbnail = loadedThumbnail;
             }
             catch (Exception ex)
             {
-                // Ten catch jest bardziej na wypadek błędów w samym Task.Run lub await
                 SimpleFileLogger.LogError($"Zewnętrzny błąd podczas operacji ładowania miniatury dla {FilePath}", ex);
-                this.Thumbnail = null; // W razie błędu, upewnij się, że Thumbnail jest null
+                this.Thumbnail = null;
             }
             finally
             {
                 IsLoadingThumbnail = false;
             }
-            return this.Thumbnail; // Zwróć załadowaną (lub null) miniaturkę
+            return this.Thumbnail;
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
