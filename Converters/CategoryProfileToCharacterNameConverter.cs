@@ -1,6 +1,5 @@
-﻿// Plik: Converters/CategoryProfileToCharacterNameConverter.cs
-using CosplayManager.Models;
-using CosplayManager.Services; // Dla SimpleFileLogger
+﻿using CosplayManager.Models;
+using CosplayManager.Services;
 using System;
 using System.Globalization;
 using System.Windows.Data;
@@ -30,10 +29,8 @@ namespace CosplayManager.Converters
                     characterName = profile.CategoryName.Trim();
                     SimpleFileLogger.Log($"CategoryProfileToCharacterNameConverter: CategoryName '{profile.CategoryName}' nie zawiera ' - ' lub część po myślniku jest pusta. Zwracam całą nazwę: '{characterName}'.");
                 }
-                // SimpleFileLogger.Log($"CategoryProfileToCharacterNameConverter: Dla CategoryName '{profile.CategoryName}', zwrócono CharacterName: '{characterName}'."); // Odkomentuj dla bardzo szczegółowego logowania
                 return characterName;
             }
-            // SimpleFileLogger.Log($"CategoryProfileToCharacterNameConverter: Wartość nie jest CategoryProfile lub jest null. Typ wartości: {value?.GetType().Name ?? "null"}"); // Odkomentuj dla bardzo szczegółowego logowania
             return string.Empty;
         }
 
