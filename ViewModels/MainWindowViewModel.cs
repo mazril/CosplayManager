@@ -2774,7 +2774,7 @@ namespace CosplayManager.ViewModels
                 progress.Report(new ProgressReport { ProcessedItems = 1, TotalItems = 1, StatusMessage = "Brak sugestii spełniających próg." });
                 // Zaktualizuj liczniki w UI, jeśli były jakieś sugestie poniżej progu
                 RefreshPendingSuggestionCountsFromCache();
-                return;
+                return; 
             }
 
             if (MessageBox.Show($"Czy na pewno chcesz automatycznie zastosować {movesToApply.Count} dopasowań (sugestii) dla modelki '{modelName}'?\nPliki zostaną przeniesione zgodnie z sugestiami.", "Potwierdź Automatyczne Stosowanie", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
