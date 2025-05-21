@@ -1,7 +1,6 @@
-﻿// Plik: Models/CategoryProfile.cs
-using CosplayManager.Services;
-using CosplayManager.Utils; // Upewnij się, że ta przestrzeń nazw jest poprawna dla MathUtils
-using CosplayManager.ViewModels.Base; // <<< DODAJ TEN USING
+﻿using CosplayManager.Services;
+using CosplayManager.Utils;
+using CosplayManager.ViewModels.Base;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -9,26 +8,13 @@ using System.Text.Json.Serialization;
 
 namespace CosplayManager.Models
 {
-    // Zmieniono CategoryProfile, aby dziedziczyło z ObservableObject
     public class CategoryProfile : ObservableObject
     {
-
-
-
-         
-         public string GetCharacterName()
-         {
-            // Prosta implementacja - dostosuj, jeśli masz bardziej złożoną logikę w ProfileService
+        public string GetCharacterName()
+        {
             var parts = CategoryName.Split(new[] { " - " }, 2, StringSplitOptions.None);
             return parts.Length > 1 ? parts[1].Trim() : (parts.Length == 1 && !string.IsNullOrWhiteSpace(parts[0]) ? "General" : CategoryName);
-         }
-
-
-
-
-
-
-
+        }
 
         private string _categoryName;
         public string CategoryName
@@ -52,7 +38,7 @@ namespace CosplayManager.Models
             {
                 if (SetProperty(ref _sourceImagePaths, value))
                 {
-                    OnPropertyChanged(nameof(ImageCountInProfile)); // Powiadom o zmianie ImageCountInProfile
+                    OnPropertyChanged(nameof(ImageCountInProfile));
                 }
             }
         }
@@ -84,7 +70,7 @@ namespace CosplayManager.Models
             {
                 if (SetProperty(ref _pendingSuggestionsCount, value))
                 {
-                    OnPropertyChanged(nameof(HasPendingSuggestions)); // Powiadom o zmianie HasPendingSuggestions
+                    OnPropertyChanged(nameof(HasPendingSuggestions));
                 }
             }
         }
@@ -92,10 +78,8 @@ namespace CosplayManager.Models
         [JsonIgnore]
         public bool HasPendingSuggestions => PendingSuggestionsCount > 0;
 
-        // Konstruktor bezparametrowy dla deserializacji JSON, jeśli potrzebny
         public CategoryProfile() : this("Unknown")
         {
-            // Ustawienie domyślnych wartości, jeśli CategoryName nie jest ustawiane przez deserializator
             _sourceImagePaths = new List<string>();
             _lastCalculatedUtc = DateTime.UtcNow;
         }
@@ -110,13 +94,12 @@ namespace CosplayManager.Models
 
         public void UpdateCentroid(List<float[]> imageEmbeddings, List<string> sourceImagePaths)
         {
-            // Użyj właściwości SourceImagePaths, aby setter został wywołany
             this.SourceImagePaths = new List<string>(sourceImagePaths ?? new List<string>());
 
             if (imageEmbeddings == null || !imageEmbeddings.Any() || !imageEmbeddings.All(e => e != null && e.Length > 0))
             {
-                this.CentroidEmbedding = null; // Użyj właściwości
-                this.LastCalculatedUtc = DateTime.UtcNow; // Użyj właściwości
+                this.CentroidEmbedding = null;
+                this.LastCalculatedUtc = DateTime.UtcNow;
                 SimpleFileLogger.Log($"Profil '{CategoryName}' zaktualizowany, ale brak poprawnych embeddingów do obliczenia centroidu. Centroid ustawiony na null. Liczba ścieżek: {this.SourceImagePaths.Count}.");
                 return;
             }
@@ -132,8 +115,8 @@ namespace CosplayManager.Models
 
             if (!validEmbeddingsWithPaths.Any())
             {
-                this.CentroidEmbedding = null; // Użyj właściwości
-                this.LastCalculatedUtc = DateTime.UtcNow; // Użyj właściwości
+                this.CentroidEmbedding = null;
+                this.LastCalculatedUtc = DateTime.UtcNow;
                 SimpleFileLogger.Log($"Profil '{CategoryName}' zaktualizowany, ale po filtracji brak poprawnych embeddingów. Centroid ustawiony na null. Liczba ścieżek: {this.SourceImagePaths.Count}.");
                 return;
             }
@@ -144,8 +127,8 @@ namespace CosplayManager.Models
             float[]? preliminaryCentroid = MathUtils.CalculateAverageEmbedding(initialEmbeddings!);
             if (preliminaryCentroid == null)
             {
-                this.CentroidEmbedding = null; // Użyj właściwości
-                this.LastCalculatedUtc = DateTime.UtcNow; // Użyj właściwości
+                this.CentroidEmbedding = null;
+                this.LastCalculatedUtc = DateTime.UtcNow;
                 SimpleFileLogger.LogWarning($"Nie udało się obliczyć wstępnego centroidu dla '{CategoryName}'.");
                 return;
             }
@@ -177,17 +160,17 @@ namespace CosplayManager.Models
 
             if (filteredEmbeddingsWithPaths.Any())
             {
-                this.CentroidEmbedding = MathUtils.CalculateAverageEmbedding(filteredEmbeddingsWithPaths.Select(ep => ep.Embedding).ToList()!); // Użyj właściwości
-                this.SourceImagePaths = filteredEmbeddingsWithPaths.Select(ep => ep.Path).ToList(); // Użyj właściwości
+                this.CentroidEmbedding = MathUtils.CalculateAverageEmbedding(filteredEmbeddingsWithPaths.Select(ep => ep.Embedding).ToList()!);
+                this.SourceImagePaths = filteredEmbeddingsWithPaths.Select(ep => ep.Path).ToList();
             }
             else
             {
                 SimpleFileLogger.LogWarning($"UpdateCentroid dla '{CategoryName}': Wszystkie embeddingi zostały odrzucone jako skrajne. Używam wstępnego centroidu (lub null, jeśli nie było obrazów).");
-                this.CentroidEmbedding = initialEmbeddings.Any() ? preliminaryCentroid : null; // Użyj właściwości
-                this.SourceImagePaths = initialPaths; // Użyj właściwości
+                this.CentroidEmbedding = initialEmbeddings.Any() ? preliminaryCentroid : null;
+                this.SourceImagePaths = initialPaths;
             }
 
-            this.LastCalculatedUtc = DateTime.UtcNow; // Użyj właściwości
+            this.LastCalculatedUtc = DateTime.UtcNow;
             SimpleFileLogger.Log($"Profil '{CategoryName}' zaktualizowany. Finalny centroid obliczony z {(this.CentroidEmbedding != null && filteredEmbeddingsWithPaths.Any() ? filteredEmbeddingsWithPaths.Count : 0)} obrazów. Zapisano {this.SourceImagePaths.Count} ścieżek źródłowych.");
         }
     }
