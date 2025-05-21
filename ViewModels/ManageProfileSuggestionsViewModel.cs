@@ -144,11 +144,6 @@ namespace CosplayManager.ViewModels
         public ICommand RefreshSuggestedCommand { get; }
         public ICommand ApplyChangesCommand { get; }
         public ICommand CancelCommand { get; }
-        // Usunięto SelectAll/DeselectAll Commands, ponieważ logika jest teraz w setterach właściwości
-        // public ICommand SelectAllSuggestedCommand { get; }
-        // public ICommand DeselectAllSuggestedCommand { get; }
-        // public ICommand SelectAllCurrentProfileCommand { get; }
-        // public ICommand DeselectAllCurrentProfileCommand { get; }
 
 
         public Action<bool?>? CloseAction { get; set; }
@@ -178,12 +173,6 @@ namespace CosplayManager.ViewModels
             RefreshSuggestedCommand = new RelayCommand(async _ => await LoadAndFilterSuggestedImagesAsync(), _ => !IsBusy);
             ApplyChangesCommand = new AsyncRelayCommand(ExecuteApplyChangesAsync, CanExecuteApplyChanges);
             CancelCommand = new RelayCommand(_ => CloseAction?.Invoke(false), _ => !IsBusy);
-
-            // Usunięto inicjalizację starych komend SelectAll/DeselectAll
-            // SelectAllSuggestedCommand = new RelayCommand(_ => SetSelectionForAll(SuggestedImages, true), _ => SuggestedImages.Any() && !IsBusy);
-            // DeselectAllSuggestedCommand = new RelayCommand(_ => SetSelectionForAll(SuggestedImages, false), _ => SuggestedImages.Any(s => s.IsSelected) && !IsBusy);
-            // SelectAllCurrentProfileCommand = new RelayCommand(_ => SetSelectionForAll(CurrentProfileImages, true), _ => CurrentProfileImages.Any() && !IsBusy);
-            // DeselectAllCurrentProfileCommand = new RelayCommand(_ => SetSelectionForAll(CurrentProfileImages, false), _ => CurrentProfileImages.Any(s => s.IsSelected) && !IsBusy);
 
             _ = InitializeDataAsync();
         }
@@ -233,7 +222,7 @@ namespace CosplayManager.ViewModels
             Application.Current.Dispatcher.Invoke(() =>
             {
                 CurrentProfileImages = new ObservableCollection<ProfileImageItemViewModel>(tempCollection.OrderBy(i => i.FileName));
-                UpdateSelectAllCurrentProfileState(); // Aktualizuj stan checkboxa "zaznacz wszystko"
+                UpdateSelectAllCurrentProfileState();
             });
         }
 
@@ -276,7 +265,7 @@ namespace CosplayManager.ViewModels
             Application.Current.Dispatcher.Invoke(() =>
             {
                 SuggestedImages = new ObservableCollection<SuggestedImageItemViewModel>(filtered);
-                UpdateSelectAllSuggestedState(); // Aktualizuj stan checkboxa "zaznacz wszystko"
+                UpdateSelectAllSuggestedState();
             });
             IsBusy = false;
         }
@@ -292,7 +281,6 @@ namespace CosplayManager.ViewModels
             }
         }
 
-        // --- Metody do obsługi zdarzeń zmiany właściwości w elementach kolekcji ---
         private void SuggestedImages_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
         {
             if (e.OldItems != null)
@@ -323,12 +311,11 @@ namespace CosplayManager.ViewModels
                 UpdateSelectAllCurrentProfileState();
         }
 
-        // --- Metody aktualizujące stan checkboxów "Zaznacz wszystko" ---
         private void UpdateSelectAllSuggestedState()
         {
             if (SuggestedImages == null || !SuggestedImages.Any())
             {
-                _selectAllSuggested = false; // Bezpośrednie ustawienie pola, aby uniknąć pętli
+                _selectAllSuggested = false;
                 OnPropertyChanged(nameof(SelectAllSuggested));
                 return;
             }
@@ -338,7 +325,7 @@ namespace CosplayManager.ViewModels
 
             if (allSelected) _selectAllSuggested = true;
             else if (noneSelected) _selectAllSuggested = false;
-            else _selectAllSuggested = null; // Stan pośredni
+            else _selectAllSuggested = null;
 
             OnPropertyChanged(nameof(SelectAllSuggested));
         }
@@ -347,7 +334,7 @@ namespace CosplayManager.ViewModels
         {
             if (CurrentProfileImages == null || !CurrentProfileImages.Any())
             {
-                _selectAllCurrentProfile = false; // Bezpośrednie ustawienie pola
+                _selectAllCurrentProfile = false;
                 OnPropertyChanged(nameof(SelectAllCurrentProfile));
                 return;
             }
@@ -357,7 +344,7 @@ namespace CosplayManager.ViewModels
 
             if (allSelected) _selectAllCurrentProfile = true;
             else if (noneSelected) _selectAllCurrentProfile = false;
-            else _selectAllCurrentProfile = null; // Stan pośredni
+            else _selectAllCurrentProfile = null;
 
             OnPropertyChanged(nameof(SelectAllCurrentProfile));
         }
@@ -376,7 +363,7 @@ namespace CosplayManager.ViewModels
             SimpleFileLogger.LogHighLevelInfo($"ManageProfileSuggestionsVM: Rozpoczęto ApplyChanges dla profilu '{TargetProfile.CategoryName}'.");
 
             bool changesMade = false;
-            var imagesToAdd = SuggestedImages?.Where(s => s.IsSelected).Select(s => s.OriginalImage).ToList() ?? new List<ImageFileEntry>();
+            var imagesToAddFromSuggestions = SuggestedImages?.Where(s => s.IsSelected).Select(s => s.OriginalImage).ToList() ?? new List<ImageFileEntry>();
             var imagesToRemoveFromProfile = CurrentProfileImages?.Where(p => p.IsSelected).Select(p => p.OriginalImage).ToList() ?? new List<ImageFileEntry>();
 
             string modelName = _profileService.GetModelNameFromCategory(TargetProfile.CategoryName);
@@ -391,6 +378,8 @@ namespace CosplayManager.ViewModels
             }
             string fullTargetMixPath = Path.Combine(modelPath, SanitizeFolderName(targetMixFolderName));
             Directory.CreateDirectory(fullTargetMixPath);
+
+            List<string> handledSourceImagePathsForCacheClearing = new List<string>();
 
             if (imagesToRemoveFromProfile.Any())
             {
@@ -412,20 +401,20 @@ namespace CosplayManager.ViewModels
                             {
                                 File.Move(sourcePath, uniqueDestPath);
                                 SimpleFileLogger.Log($"Przeniesiono: '{sourcePath}' -> '{uniqueDestPath}'");
-                                pathsToRemoveFromProfileDefinition.Add(sourcePath); // Dodaj oryginalną ścieżkę do usunięcia z definicji profilu
+                                pathsToRemoveFromProfileDefinition.Add(sourcePath);
                                 changesMade = true;
                             }
                             else
                             {
                                 SimpleFileLogger.Log($"Plik '{sourcePath}' już jest w folderze docelowym lub ma taką samą ścieżkę. Pomijanie przenoszenia fizycznego, ale zostanie usunięty z definicji profilu.");
                                 pathsToRemoveFromProfileDefinition.Add(sourcePath);
-                                changesMade = true; // Zmiana w definicji profilu
+                                changesMade = true;
                             }
                         }
                         else
                         {
                             SimpleFileLogger.LogWarning($"Plik źródłowy '{sourcePath}' nie istnieje. Zostanie usunięty z definicji profilu, jeśli tam jest.");
-                            pathsToRemoveFromProfileDefinition.Add(sourcePath); // Nadal usuń z definicji, jeśli nie istnieje
+                            pathsToRemoveFromProfileDefinition.Add(sourcePath);
                             changesMade = true;
                         }
                     }
@@ -440,17 +429,19 @@ namespace CosplayManager.ViewModels
                 }
             }
 
-            if (imagesToAdd.Any())
+            if (imagesToAddFromSuggestions.Any())
             {
-                SimpleFileLogger.Log($"ManageProfileSuggestionsVM: Dodawanie {imagesToAdd.Count} obrazów do profilu '{TargetProfile.CategoryName}'.");
+                SimpleFileLogger.Log($"ManageProfileSuggestionsVM: Dodawanie {imagesToAddFromSuggestions.Count} obrazów do profilu '{TargetProfile.CategoryName}'.");
                 string targetProfileCharacterFolder = _profileService.GetCharacterNameFromCategory(TargetProfile.CategoryName);
                 string targetProfileFullPath = Path.Combine(modelPath, SanitizeFolderName(targetProfileCharacterFolder));
                 Directory.CreateDirectory(targetProfileFullPath);
 
                 List<string> pathsToAddToProfileDefinition = new List<string>();
-                foreach (var imageEntry in imagesToAdd)
+                foreach (var imageEntry in imagesToAddFromSuggestions)
                 {
-                    string sourcePath = imageEntry.FilePath;
+                    string sourcePath = imageEntry.FilePath; // To jest oryginalna ścieżka z folderu "Mix"
+                    handledSourceImagePathsForCacheClearing.Add(sourcePath); // Dodaj do listy do wyczyszczenia z cache
+
                     string destFileName = Path.GetFileName(sourcePath);
                     string destPath = Path.Combine(targetProfileFullPath, destFileName);
 
@@ -470,8 +461,8 @@ namespace CosplayManager.ViewModels
                             else
                             {
                                 SimpleFileLogger.Log($"Plik '{sourcePath}' już jest w folderze docelowym profilu. Upewnianie się, że jest w definicji.");
-                                pathsToAddToProfileDefinition.Add(sourcePath); // Upewnij się, że jest w definicji
-                                changesMade = true; // Nawet jeśli plik nie był przenoszony, definicja profilu mogła się zmienić
+                                pathsToAddToProfileDefinition.Add(sourcePath);
+                                changesMade = true;
                             }
                         }
                         else
@@ -501,7 +492,8 @@ namespace CosplayManager.ViewModels
                 SimpleFileLogger.Log($"ManageProfileSuggestionsVM: Zmiany wprowadzone. Przeliczanie profilu '{TargetProfile.CategoryName}'.");
                 var dummyProgress = new Progress<ProgressReport>();
                 var imagesForProfileRegen = new List<ImageFileEntry>();
-                foreach (var path in TargetProfile.SourceImagePaths.ToList()) // ToList() na wypadek modyfikacji kolekcji
+                var currentSourcePathsCopy = TargetProfile.SourceImagePaths.ToList(); // Kopia na wypadek modyfikacji
+                foreach (var path in currentSourcePathsCopy)
                 {
                     if (File.Exists(path))
                     {
@@ -510,14 +502,34 @@ namespace CosplayManager.ViewModels
                     }
                     else
                     {
-                        // Plik mógł zostać usunięty w międzyczasie przez inną operację, usuń go z listy jeśli tak
                         TargetProfile.SourceImagePaths.RemoveAll(p => p.Equals(path, StringComparison.OrdinalIgnoreCase));
                         SimpleFileLogger.LogWarning($"Plik '{path}' nie istnieje podczas regeneracji profilu '{TargetProfile.CategoryName}'. Usunięto z definicji.");
                     }
                 }
                 await _profileService.GenerateProfileAsync(TargetProfile.CategoryName, imagesForProfileRegen, dummyProgress, CancellationToken.None);
+
+                // *** KLUCZOWA ZMIANA - POCZĄTEK ***
+                // Wyczyść obsłużone sugestie z cache MainWindowViewModel PRZED odświeżeniem profili w MainWindowViewModel
+                if (handledSourceImagePathsForCacheClearing.Any())
+                {
+                    SimpleFileLogger.Log($"ManageProfileSuggestionsVM: Czyszczenie {handledSourceImagePathsForCacheClearing.Count} obsłużonych sugestii z cache MainWindowViewModel dla profilu '{TargetProfile.CategoryName}'.");
+                    _mainWindowViewModel.ClearHandledSuggestionsForProfile(handledSourceImagePathsForCacheClearing, TargetProfile.CategoryName);
+                }
+                // *** KLUCZOWA ZMIANA - KONIEC ***
+
                 await _mainWindowViewModel.RefreshProfilesAfterChangeAsync();
             }
+            else if (handledSourceImagePathsForCacheClearing.Any())
+            {
+                // Jeśli nie było zmian w plikach (np. wszystkie były już na miejscu),
+                // ale jakieś sugestie zostały "zaakceptowane" (zaznaczone),
+                // to i tak powinniśmy je wyczyścić z cache.
+                SimpleFileLogger.Log($"ManageProfileSuggestionsVM: Brak fizycznych zmian w plikach, ale czyszczenie {handledSourceImagePathsForCacheClearing.Count} 'zaakceptowanych' sugestii z cache dla '{TargetProfile.CategoryName}'.");
+                _mainWindowViewModel.ClearHandledSuggestionsForProfile(handledSourceImagePathsForCacheClearing, TargetProfile.CategoryName);
+                // W tym przypadku nie ma potrzeby RefreshProfilesAfterChangeAsync, bo profile się nie zmieniły,
+                // ale ClearHandledSuggestionsForProfile samo w sobie wywoła RefreshPendingSuggestionCountsFromCache.
+            }
+
 
             IsBusy = false;
             SimpleFileLogger.LogHighLevelInfo($"ManageProfileSuggestionsVM: Zakończono ApplyChanges dla profilu '{TargetProfile.CategoryName}'. Zmiany: {changesMade}");
@@ -526,8 +538,6 @@ namespace CosplayManager.ViewModels
 
         private string GenerateUniqueTargetPath(string targetDirectory, string originalFileNameWithExtension, string suffixIfConflict)
         {
-            // Ta metoda jest już w MainWindowViewModel, można by ją przenieść do jakiejś klasy Utils
-            // Dla uproszczenia, kopiuję ją tutaj. W docelowym rozwiązaniu lepiej mieć ją w jednym miejscu.
             string baseName = Path.GetFileNameWithoutExtension(originalFileNameWithExtension);
             string extension = Path.GetExtension(originalFileNameWithExtension);
             string finalPath = Path.Combine(targetDirectory, originalFileNameWithExtension);
@@ -537,7 +547,7 @@ namespace CosplayManager.ViewModels
                 string newFileName = $"{baseName}{suffixIfConflict}{counter}{extension}";
                 finalPath = Path.Combine(targetDirectory, newFileName);
                 counter++;
-                if (counter > 9999) // Zabezpieczenie przed nieskończoną pętlą
+                if (counter > 9999)
                 {
                     newFileName = $"{baseName}_{Guid.NewGuid():N}{extension}";
                     finalPath = Path.Combine(targetDirectory, newFileName);

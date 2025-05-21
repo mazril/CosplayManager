@@ -64,6 +64,24 @@ namespace CosplayManager.ViewModels
             }
         }
 
+        // NOWA WŁAŚCIWOŚĆ DLA AUTOMATYCZNEGO ŁADOWANIA MINIATUR
+        private bool _autoLoadThumbnailsInEditor = true;
+        public bool AutoLoadThumbnailsInEditor
+        {
+            get => _autoLoadThumbnailsInEditor;
+            set
+            {
+                if (SetProperty(ref _autoLoadThumbnailsInEditor, value))
+                {
+                    SimpleFileLogger.LogHighLevelInfo($"Auto-load thumbnails in editor {(value ? "enabled" : "disabled")} by user.");
+                    // Jeśli ustawienie jest zmieniane, a profil jest wybrany,
+                    // można rozważyć przeładowanie miniaturek zgodnie z nowym ustawieniem.
+                    // Na razie zmiana będzie miała efekt przy następnym wyborze profilu lub ręcznym odświeżeniu.
+                }
+            }
+        }
+
+
         private ObservableCollection<ModelDisplayViewModel> _hierarchicalProfilesList;
         public ObservableCollection<ModelDisplayViewModel> HierarchicalProfilesList
         {
@@ -80,7 +98,7 @@ namespace CosplayManager.ViewModels
                 string? oldSelectedProfileName = _selectedProfile?.CategoryName;
                 if (SetProperty(ref _selectedProfile, value))
                 {
-                    UpdateEditFieldsFromSelectedProfile();
+                    UpdateEditFieldsFromSelectedProfile(); // ZMODYFIKOWANA METODA
                     OnPropertyChanged(nameof(IsProfileSelected));
                     CommandManager.InvalidateRequerySuggested(); // Odśwież CanExecute komend
                 }
@@ -564,7 +582,7 @@ namespace CosplayManager.ViewModels
         }
 
 
-        private void UpdateEditFieldsFromSelectedProfile()
+        private async void UpdateEditFieldsFromSelectedProfile()
         {
             if (_selectedProfile != null)
             {
@@ -574,13 +592,25 @@ namespace CosplayManager.ViewModels
                 CharacterNameInput = characterFullName;
 
                 var newImageFiles = new ObservableCollection<ImageFileEntry>();
+                var thumbnailLoadTasks = new List<Task>();
+
                 if (_selectedProfile.SourceImagePaths != null)
                 {
                     foreach (var path in _selectedProfile.SourceImagePaths)
                     {
                         if (File.Exists(path)) // Sprawdź, czy plik nadal istnieje
                         {
-                            newImageFiles.Add(new ImageFileEntry { FilePath = path, FileName = Path.GetFileName(path) });
+                            // Tworzymy ImageFileEntry, ale jeszcze bez metadanych (poza ścieżką i nazwą)
+                            // Pełne metadane mogą być załadowane później, jeśli potrzebne
+                            var entry = new ImageFileEntry { FilePath = path, FileName = Path.GetFileName(path) };
+                            newImageFiles.Add(entry);
+
+                            // Jeśli AutoLoadThumbnailsInEditor jest włączone, dodaj zadanie ładowania miniaturki
+                            if (AutoLoadThumbnailsInEditor) // <<< NOWY WARUNEK
+                            {
+                                // entry.LoadThumbnailAsync() zwróci Task, który możemy dodać do listy
+                                thumbnailLoadTasks.Add(entry.LoadThumbnailAsync());
+                            }
                         }
                         else
                         {
@@ -588,7 +618,35 @@ namespace CosplayManager.ViewModels
                         }
                     }
                 }
-                ImageFiles = newImageFiles; // Przypisz nową kolekcję
+                ImageFiles = newImageFiles; // Przypisz nową kolekcję (z lub bez miniaturek w zależności od ustawienia)
+
+                // Jeśli były jakieś zadania ładowania miniaturek, poczekaj na nie
+                // Robimy to po przypisaniu ImageFiles, aby UI mogło się zaktualizować z podstawowymi danymi
+                if (thumbnailLoadTasks.Any())
+                {
+                    IsBusy = true; // Można ustawić flagę zajętości na czas ładowania miniaturek
+                    string originalStatus = ProgressStatusText;
+                    ProgressStatusText = $"Ładowanie miniaturek dla profilu '{_selectedProfile.CategoryName}'...";
+                    CurrentProgress = 0; MaximumProgress = thumbnailLoadTasks.Count; IsProgressIndeterminate = false;
+
+                    // Prosty sposób na aktualizację postępu ładowania miniaturek
+                    for (int i = 0; i < thumbnailLoadTasks.Count; i++)
+                    {
+                        try
+                        {
+                            await thumbnailLoadTasks[i]; // Poczekaj na zakończenie i-tego zadania
+                        }
+                        catch (Exception exThumb)
+                        {
+                            SimpleFileLogger.LogError($"Błąd podczas ładowania miniaturki w UpdateEditFieldsFromSelectedProfile dla profilu {_selectedProfile.CategoryName}", exThumb);
+                        }
+                        CurrentProgress = i + 1;
+                        ProgressStatusText = $"Ładowanie miniaturki {CurrentProgress}/{MaximumProgress}...";
+                    }
+                    ProgressStatusText = originalStatus; // Przywróć oryginalny status
+                    CurrentProgress = 0; MaximumProgress = 100; IsProgressIndeterminate = true; // Reset paska postępu
+                    IsBusy = false;
+                }
             }
             else // Jeśli żaden profil nie jest wybrany
             {
@@ -598,6 +656,7 @@ namespace CosplayManager.ViewModels
                 ImageFiles = new ObservableCollection<ImageFileEntry>(); // Wyczyść listę plików
             }
         }
+
 
         private void ClearModelSpecificSuggestionsCache()
         {
@@ -614,8 +673,8 @@ namespace CosplayManager.ViewModels
                 LibraryRootPath = this.LibraryRootPath,
                 SourceFolderNamesInput = this.SourceFolderNamesInput,
                 SuggestionSimilarityThreshold = this.SuggestionSimilarityThreshold,
-                EnableDebugLogging = this.EnableDebugLogging
-                // Dodaj inne ustawienia, jeśli są
+                EnableDebugLogging = this.EnableDebugLogging,
+                AutoLoadThumbnailsInEditor = this.AutoLoadThumbnailsInEditor // <<< ZAPIS NOWEGO USTAWIENIA
             };
         }
 
@@ -629,6 +688,7 @@ namespace CosplayManager.ViewModels
                 SourceFolderNamesInput = "Mix,Mieszane,Unsorted,Downloaded"; // Domyślne foldery
                 SuggestionSimilarityThreshold = 0.85; // Domyślny próg
                 EnableDebugLogging = false; // Domyślnie wyłączone
+                AutoLoadThumbnailsInEditor = true; // Domyślnie włączone
                 SimpleFileLogger.IsDebugLoggingEnabled = false;
             }
             else
@@ -637,9 +697,10 @@ namespace CosplayManager.ViewModels
                 SourceFolderNamesInput = settings.SourceFolderNamesInput;
                 SuggestionSimilarityThreshold = settings.SuggestionSimilarityThreshold;
                 EnableDebugLogging = settings.EnableDebugLogging;
+                AutoLoadThumbnailsInEditor = settings.AutoLoadThumbnailsInEditor; // <<< WCZYTANIE NOWEGO USTAWIENIA
                 SimpleFileLogger.IsDebugLoggingEnabled = this.EnableDebugLogging; // Synchronizuj logger
             }
-            SimpleFileLogger.LogHighLevelInfo($"Zastosowano ustawienia w ViewModel. Debug logging: {(EnableDebugLogging ? "Enabled" : "Disabled")}.");
+            SimpleFileLogger.LogHighLevelInfo($"Zastosowano ustawienia w ViewModel. Debug logging: {(EnableDebugLogging ? "Enabled" : "Disabled")}. Auto-load thumbnails: {(AutoLoadThumbnailsInEditor ? "Enabled" : "Disabled")}.");
         }
 
 
@@ -693,7 +754,7 @@ namespace CosplayManager.ViewModels
                 _activeLongOperationCts = null;
             }
             // Zapisz ustawienia
-            await _settingsService.SaveSettingsAsync(GetCurrentSettings());
+            await _settingsService.SaveSettingsAsync(GetCurrentSettings()); // <<< ZAPIS USTAWIEN PRZY ZAMYKANIU
             SimpleFileLogger.LogHighLevelInfo("ViewModel: OnAppClosingAsync - Ustawienia zapisane.");
         }
 
@@ -1017,6 +1078,7 @@ namespace CosplayManager.ViewModels
                 ProgressStatusText = "Dodawanie plików i ładowanie metadanych...";
                 CurrentProgress = 0; MaximumProgress = openFileDialog.FileNames.Length; IsProgressIndeterminate = false;
                 int addedCount = 0;
+                var thumbnailLoadTasks = new List<Task>();
 
                 try
                 {
@@ -1034,6 +1096,11 @@ namespace CosplayManager.ViewModels
                             {
                                 ImageFiles.Add(entry);
                                 addedCount++;
+                                // Jeśli autoładowanie miniatur jest włączone, dodaj zadanie
+                                if (AutoLoadThumbnailsInEditor) // <<< NOWY WARUNEK
+                                {
+                                    thumbnailLoadTasks.Add(entry.LoadThumbnailAsync());
+                                }
                             }
                             else
                             {
@@ -1042,6 +1109,16 @@ namespace CosplayManager.ViewModels
                         }
                     }
                     ProgressStatusText = addedCount > 0 ? $"Dodano {addedCount} nowych plików." : "Nie dodano nowych plików (mogły już istnieć na liście).";
+
+                    // Poczekaj na załadowanie wszystkich miniaturek, jeśli były dodawane
+                    if (thumbnailLoadTasks.Any())
+                    {
+                        string thumbStatus = ProgressStatusText;
+                        ProgressStatusText = $"Ładowanie {thumbnailLoadTasks.Count} miniaturek...";
+                        await Task.WhenAll(thumbnailLoadTasks);
+                        ProgressStatusText = thumbStatus + " Miniaturki załadowane.";
+                    }
+
                 }
                 catch (Exception ex)
                 {
@@ -1052,7 +1129,7 @@ namespace CosplayManager.ViewModels
                 finally
                 {
                     IsBusy = false; // Zresetuj IsBusy na końcu
-                    if (ProgressStatusText.StartsWith("Dodawanie:")) ProgressStatusText = originalStatus; // Przywróć status, jeśli nie został zmieniony
+                    if (ProgressStatusText.StartsWith("Dodawanie:") || ProgressStatusText.StartsWith("Ładowanie")) ProgressStatusText = originalStatus; // Przywróć status, jeśli nie został zmieniony
                     // Resetuj pasek postępu po zakończeniu
                     CurrentProgress = 0; MaximumProgress = 100; IsProgressIndeterminate = true;
                 }
@@ -2774,7 +2851,7 @@ namespace CosplayManager.ViewModels
                 progress.Report(new ProgressReport { ProcessedItems = 1, TotalItems = 1, StatusMessage = "Brak sugestii spełniających próg." });
                 // Zaktualizuj liczniki w UI, jeśli były jakieś sugestie poniżej progu
                 RefreshPendingSuggestionCountsFromCache();
-                return; 
+                return;
             }
 
             if (MessageBox.Show($"Czy na pewno chcesz automatycznie zastosować {movesToApply.Count} dopasowań (sugestii) dla modelki '{modelName}'?\nPliki zostaną przeniesione zgodnie z sugestiami.", "Potwierdź Automatyczne Stosowanie", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
@@ -2812,5 +2889,5 @@ namespace CosplayManager.ViewModels
             public bool Equals(ImageFileEntry? x, ImageFileEntry? y) { if (ReferenceEquals(x, y)) return true; if (x is null || y is null) return false; return x.FilePath.Equals(y.FilePath, StringComparison.OrdinalIgnoreCase); }
             public int GetHashCode(ImageFileEntry obj) { return obj.FilePath?.GetHashCode(StringComparison.OrdinalIgnoreCase) ?? 0; }
         }
-    } 
+    }
 }
