@@ -1,12 +1,11 @@
-﻿// Plik: Converters/BooleanToVisibilityConverter.cs
-using System;
+﻿using System;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
 
 namespace CosplayManager.Converters
 {
-    public class BooleanToVisibilityConverter : IValueConverter // Upewnij się, że jest public
+    public class BooleanToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
