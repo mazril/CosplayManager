@@ -1052,7 +1052,7 @@ namespace CosplayManager.ViewModels
             progress.Report(new ProgressReport { ProcessedItems = totalProfiles, TotalItems = totalProfiles, StatusMessage = $"Usuwanie duplikatów dla '{modelName}' zakończone." });
             if (Interlocked.Read(ref totalDuplicatesRemoved) > 0 || changed) { StatusMessage = $"Zakończono dla '{modelName}'. Usunięto: {Interlocked.Read(ref totalDuplicatesRemoved)}. Odświeżanie..."; _isRefreshingProfilesPostMove = true; await InternalExecuteLoadProfilesAsync(token, progress); _isRefreshingProfilesPostMove = false; MessageBox.Show($"Usunięto {Interlocked.Read(ref totalDuplicatesRemoved)} duplikatów dla '{modelName}'.", "Zakończono", MessageBoxButton.OK, MessageBoxImage.Information); } else { StatusMessage = $"Brak duplikatów dla '{modelName}'."; MessageBox.Show(StatusMessage, "Zakończono", MessageBoxButton.OK, MessageBoxImage.Information); }
         }
-
+         
         private async Task ExecuteApplyAllMatchesForModelAsync(object? parameter, CancellationToken token, IProgress<ProgressReport> progress)
         {
             if (!(parameter is ModelDisplayViewModel modelVM)) { StatusMessage = "Błąd: Nieprawidłowy parametr."; MessageBox.Show(StatusMessage, "Błąd", MessageBoxButton.OK, MessageBoxImage.Error); return; }
