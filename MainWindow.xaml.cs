@@ -1,5 +1,4 @@
-// Plik: MainWindow.xaml.cs
-using CosplayManager.Models; // Dla ProgressReport
+using CosplayManager.Models;
 using CosplayManager.Services;
 using CosplayManager.ViewModels;
 using Microsoft.Win32;
@@ -9,9 +8,9 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Controls; // Dla ScrollViewer
-using System.Windows.Input; // Dla MouseWheelEventArgs
-using System.Windows.Media; // Dla VisualTreeHelper
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using MahApps.Metro.Controls;
 
 namespace CosplayManager
@@ -34,7 +33,7 @@ namespace CosplayManager
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            var statusTextBlock = this.StatusTextBlock; // U¿ywamy x:Name z XAML
+            var statusTextBlock = this.StatusTextBlock;
             if (statusTextBlock != null) statusTextBlock.Text = "Inicjalizacja aplikacji...";
 
             _settingsServiceInstance = new SettingsService();
@@ -56,7 +55,6 @@ namespace CosplayManager
             {
                 using (var ctsInitVM = new CancellationTokenSource())
                 {
-                    // Poprawione wywo³anie - delegat teraz akceptuje token i progress
                     await _viewModelInstance.RunLongOperation(
                         async (token, progress) => await _viewModelInstance.InitializeAsync(token, progress),
                         "Inicjalizacja ViewModelu"
@@ -94,13 +92,11 @@ namespace CosplayManager
                               "B³¹d Po³¹czenia z Serwerem AI", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
-            var testClipMenuItem = this.TestClipMenuItem; // U¿ywamy x:Name
+            var testClipMenuItem = this.TestClipMenuItem;
             if (testClipMenuItem != null) testClipMenuItem.IsEnabled = serverConnectedAndVerified;
 
             if (statusTextBlock != null && (_viewModelInstance?.ProgressStatusText.EndsWith("...") == true || _viewModelInstance?.ProgressStatusText.Contains("Inicjalizacja ViewModelu - Zakoñczono.") == true))
             {
-                // Po inicjalizacji, ProgressStatusText powinien byæ ju¿ ustawiony przez RunLongOperation
-                // Jeœli nie, mo¿na by ustawiæ domyœlny status.
                 if (string.IsNullOrEmpty(_viewModelInstance?.ProgressStatusText) || _viewModelInstance.ProgressStatusText.EndsWith("..."))
                 {
                     _viewModelInstance.ProgressStatusText = serverConnectedAndVerified ? "Aplikacja gotowa." : "Aplikacja gotowa (funkcje AI niedostêpne).";
@@ -117,7 +113,6 @@ namespace CosplayManager
             }
             _clipService?.Dispose();
             SimpleFileLogger.LogHighLevelInfo("MainWindow: Zasoby ClipServiceHttpClient zwolnione.");
-            // EmbeddingCacheServiceSQLite nie ma obecnie metody Dispose do wywo³ania, ale jeœli by mia³a, to tutaj.
         }
 
         private void ExitMenuItem_Click(object sender, RoutedEventArgs e)
@@ -204,19 +199,14 @@ namespace CosplayManager
             }
             else if (_viewModelInstance != null && e.NewValue is ModelDisplayViewModel)
             {
-                // Jeœli wybrano wêze³ modelki, mo¿na wyczyœciæ SelectedProfile lub ustawiæ na null,
-                // aby edytor profilu nie pokazywa³ danych ostatnio wybranej postaci.
-                // _viewModelInstance.SelectedProfile = null; // Opcjonalne, zale¿y od po¿¹danego zachowania
+                // _viewModelInstance.SelectedProfile = null; 
             }
         }
 
-        // NOWA METODA OBS£UGI PRZEWIJANIA KÓ£KIEM MYSZY 
         private void ImageFilesListView_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
-            if (!e.Handled && ImageFilesScrollViewer != null) // Odwo³ujemy siê do nazwanego ScrollViewer
+            if (!e.Handled && ImageFilesScrollViewer != null)
             {
-                // Wspó³czynnik prêdkoœci przewijania - mo¿na dostosowaæ
-                // e.Delta jest zwykle wielokrotnoœci¹ 120. Mniejszy scrollFactor = wolniejsze przewijanie.
                 double scrollFactor = 0.5;
                 double offsetChange = -e.Delta * scrollFactor;
 
