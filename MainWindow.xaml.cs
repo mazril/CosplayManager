@@ -210,7 +210,7 @@ namespace CosplayManager
             }
         }
 
-        // NOWA METODA OBS£UGI PRZEWIJANIA KÓ£KIEM MYSZY
+        // NOWA METODA OBS£UGI PRZEWIJANIA KÓ£KIEM MYSZY 
         private void ImageFilesListView_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
             if (!e.Handled && ImageFilesScrollViewer != null) // Odwo³ujemy siê do nazwanego ScrollViewer
