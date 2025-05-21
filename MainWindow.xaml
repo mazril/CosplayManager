@@ -94,6 +94,11 @@
                                   IsChecked="{Binding EnableDebugLogging, Mode=TwoWay}"
                                   Margin="0,10,0,5"/>
 
+                        <mah:ToggleSwitch Header="Automatycznie ładuj miniatury w edytorze profili"
+                                          IsOn="{Binding AutoLoadThumbnailsInEditor, Mode=TwoWay}"
+                                          ToolTip="Określa, czy miniatury obrazów mają być automatycznie ładowane po wybraniu profilu w edytorze."
+                                          Margin="0,5,0,5"
+                                          OnContent="Włączone" OffContent="Wyłączone" />
                         <Button Content="Zapisz Ustawienia" Command="{Binding SaveAppSettingsCommand}" Margin="0,10,0,0" Padding="10,5"/>
                     </StackPanel>
                 </Expander>
@@ -284,8 +289,9 @@
                         IsEnabled="{Binding ImageFiles.Count, Converter={StaticResource CountToBoolConverter}}"/>
 
                 <GroupBox Grid.Row="2" Header="Obrazy w wybranym/edytowanym profilu" Margin="0,5,0,0">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                        <ListView x:Name="ImageFilesListView" ItemsSource="{Binding ImageFiles}" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ScrollViewer x:Name="ImageFilesScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <ListView x:Name="ImageFilesListView" ItemsSource="{Binding ImageFiles}" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                  PreviewMouseWheel="ImageFilesListView_PreviewMouseWheel">
                             <ListView.ItemsPanel>
                                 <ItemsPanelTemplate>
                                     <WrapPanel Orientation="Horizontal" ItemWidth="150" ItemHeight="170"/>

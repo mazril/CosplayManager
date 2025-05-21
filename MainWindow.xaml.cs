@@ -9,7 +9,9 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Controls;
+using System.Windows.Controls; // Dla ScrollViewer
+using System.Windows.Input; // Dla MouseWheelEventArgs
+using System.Windows.Media; // Dla VisualTreeHelper
 using MahApps.Metro.Controls;
 
 namespace CosplayManager
@@ -205,6 +207,21 @@ namespace CosplayManager
                 // Jeœli wybrano wêze³ modelki, mo¿na wyczyœciæ SelectedProfile lub ustawiæ na null,
                 // aby edytor profilu nie pokazywa³ danych ostatnio wybranej postaci.
                 // _viewModelInstance.SelectedProfile = null; // Opcjonalne, zale¿y od po¿¹danego zachowania
+            }
+        }
+
+        // NOWA METODA OBS£UGI PRZEWIJANIA KÓ£KIEM MYSZY
+        private void ImageFilesListView_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (!e.Handled && ImageFilesScrollViewer != null) // Odwo³ujemy siê do nazwanego ScrollViewer
+            {
+                // Wspó³czynnik prêdkoœci przewijania - mo¿na dostosowaæ
+                // e.Delta jest zwykle wielokrotnoœci¹ 120. Mniejszy scrollFactor = wolniejsze przewijanie.
+                double scrollFactor = 0.5;
+                double offsetChange = -e.Delta * scrollFactor;
+
+                ImageFilesScrollViewer.ScrollToVerticalOffset(ImageFilesScrollViewer.VerticalOffset + offsetChange);
+                e.Handled = true;
             }
         }
     }

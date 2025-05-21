@@ -592,25 +592,18 @@ namespace CosplayManager.ViewModels
                 CharacterNameInput = characterFullName;
 
                 var newImageFiles = new ObservableCollection<ImageFileEntry>();
-                var thumbnailLoadTasks = new List<Task>();
+                var thumbnailLoadTasks = new List<Task>(); // Lista zadań ładowania miniaturek
 
                 if (_selectedProfile.SourceImagePaths != null)
                 {
                     foreach (var path in _selectedProfile.SourceImagePaths)
                     {
-                        if (File.Exists(path)) // Sprawdź, czy plik nadal istnieje
+                        if (File.Exists(path))
                         {
-                            // Tworzymy ImageFileEntry, ale jeszcze bez metadanych (poza ścieżką i nazwą)
-                            // Pełne metadane mogą być załadowane później, jeśli potrzebne
                             var entry = new ImageFileEntry { FilePath = path, FileName = Path.GetFileName(path) };
                             newImageFiles.Add(entry);
-
-                            // Jeśli AutoLoadThumbnailsInEditor jest włączone, dodaj zadanie ładowania miniaturki
-                            if (AutoLoadThumbnailsInEditor) // <<< NOWY WARUNEK
-                            {
-                                // entry.LoadThumbnailAsync() zwróci Task, który możemy dodać do listy
-                                thumbnailLoadTasks.Add(entry.LoadThumbnailAsync());
-                            }
+                            // Nie dodajemy tutaj zadań do thumbnailLoadTasks od razu,
+                            // zrobimy to w pętli z semaforem poniżej, jeśli AutoLoadThumbnailsInEditor jest true.
                         }
                         else
                         {
@@ -618,42 +611,98 @@ namespace CosplayManager.ViewModels
                         }
                     }
                 }
-                ImageFiles = newImageFiles; // Przypisz nową kolekcję (z lub bez miniaturek w zależności od ustawienia)
+                ImageFiles = newImageFiles; // Przypisz kolekcję do UI
 
-                // Jeśli były jakieś zadania ładowania miniaturek, poczekaj na nie
-                // Robimy to po przypisaniu ImageFiles, aby UI mogło się zaktualizować z podstawowymi danymi
-                if (thumbnailLoadTasks.Any())
+                if (AutoLoadThumbnailsInEditor && ImageFiles.Any()) // Sprawdź ImageFiles zamiast thumbnailLoadTasks
                 {
-                    IsBusy = true; // Można ustawić flagę zajętości na czas ładowania miniaturek
-                    string originalStatus = ProgressStatusText;
-                    ProgressStatusText = $"Ładowanie miniaturek dla profilu '{_selectedProfile.CategoryName}'...";
-                    CurrentProgress = 0; MaximumProgress = thumbnailLoadTasks.Count; IsProgressIndeterminate = false;
+                    SimpleFileLogger.Log($"UpdateEditFields: Rozpoczynanie automatycznego ładowania {ImageFiles.Count} miniaturek dla profilu '{_selectedProfile.CategoryName}'.");
 
-                    // Prosty sposób na aktualizację postępu ładowania miniaturek
-                    for (int i = 0; i < thumbnailLoadTasks.Count; i++)
+                    bool wasBusyOriginally = IsBusy;
+                    IsBusy = true;
+                    string originalStatus = ProgressStatusText;
+                    ProgressStatusText = $"Ładowanie {ImageFiles.Count} miniaturek dla '{_selectedProfile.CategoryName}'...";
+                    CurrentProgress = 0;
+                    MaximumProgress = ImageFiles.Count;
+                    IsProgressIndeterminate = false;
+
+                    using var thumbnailSemaphore = new SemaphoreSlim(10, 10); // Ogranicznik jak w EnsureThumbnailsLoadedCommand
+                    long thumbsLoadedCount = 0;
+
+                    // Przejdź przez obrazy w świeżo przypisanej kolekcji ImageFiles
+                    foreach (var entry in ImageFiles)
                     {
-                        try
+                        if (entry.Thumbnail == null && !entry.IsLoadingThumbnail) // Ładuj tylko jeśli potrzebne
                         {
-                            await thumbnailLoadTasks[i]; // Poczekaj na zakończenie i-tego zadania
+                            // Dodaj zadanie do listy, aby je później oczekiwać przez Task.WhenAll
+                            thumbnailLoadTasks.Add(Task.Run(async () =>
+                            {
+                                await thumbnailSemaphore.WaitAsync(); // Oczekuj na wolne miejsce w semaforze
+                                try
+                                {
+                                    // Tutaj nie ma CancellationToken, jeśli nie jest przekazywany do UpdateEditFieldsFromSelectedProfile
+                                    // Jeśli byłby potrzebny, trzeba by go dodać do sygnatury metody i przekazać.
+                                    // Dla uproszczenia zakładamy, że LoadThumbnailAsync obsłuży to wewnętrznie (jeśli potrafi)
+                                    // lub operacja jest stosunkowo krótka.
+                                    await entry.LoadThumbnailAsync();
+                                }
+                                catch (Exception exThumb)
+                                {
+                                    SimpleFileLogger.LogError($"Błąd podczas automatycznego ładowania miniaturki dla {entry.FilePath} w profilu '{_selectedProfile.CategoryName}'", exThumb);
+                                }
+                                finally
+                                {
+                                    thumbnailSemaphore.Release();
+                                    long currentCount = Interlocked.Increment(ref thumbsLoadedCount);
+                                    Application.Current.Dispatcher.Invoke(() =>
+                                    {
+                                        CurrentProgress = (int)currentCount;
+                                        // Można zaktualizować ProgressStatusText, jeśli chcemy bardziej szczegółowy postęp
+                                        // ProgressStatusText = $"Załadowano miniaturkę {currentCount}/{MaximumProgress}...";
+                                    });
+                                }
+                            }));
                         }
-                        catch (Exception exThumb)
+                        else // Jeśli miniaturka już jest lub się ładuje, zlicz ją jako "przetworzoną" dla paska postępu
                         {
-                            SimpleFileLogger.LogError($"Błąd podczas ładowania miniaturki w UpdateEditFieldsFromSelectedProfile dla profilu {_selectedProfile.CategoryName}", exThumb);
+                            long currentCount = Interlocked.Increment(ref thumbsLoadedCount);
+                            Application.Current.Dispatcher.Invoke(() => CurrentProgress = (int)currentCount);
                         }
-                        CurrentProgress = i + 1;
-                        ProgressStatusText = $"Ładowanie miniaturki {CurrentProgress}/{MaximumProgress}...";
                     }
-                    ProgressStatusText = originalStatus; // Przywróć oryginalny status
-                    CurrentProgress = 0; MaximumProgress = 100; IsProgressIndeterminate = true; // Reset paska postępu
-                    IsBusy = false;
+
+                    try
+                    {
+                        if (thumbnailLoadTasks.Any())
+                        {
+                            await Task.WhenAll(thumbnailLoadTasks);
+                        }
+                        SimpleFileLogger.Log($"UpdateEditFields: Zakończono automatyczne ładowanie miniaturek dla profilu '{_selectedProfile.CategoryName}'.");
+                    }
+                    catch (Exception ex)
+                    {
+                        SimpleFileLogger.LogError($"UpdateEditFields: Błąd podczas Task.WhenAll (auto-ładowanie miniaturek) dla profilu '{_selectedProfile.CategoryName}'.", ex);
+                    }
+                    finally
+                    {
+                        ProgressStatusText = originalStatus;
+                        CurrentProgress = MaximumProgress; // Pokaż 100% po zakończeniu
+                        // CurrentProgress = 0; // lub zresetuj
+                        // MaximumProgress = 100;
+                        // IsProgressIndeterminate = true; // Można wrócić do indeterminate lub ustawić na false
+                        IsProgressIndeterminate = false;
+                        if (!wasBusyOriginally)
+                        {
+                            IsBusy = false;
+                        }
+                        SimpleFileLogger.Log($"UpdateEditFields: IsBusy_finally (auto-ładowanie) set to {IsBusy} for profile '{_selectedProfile.CategoryName}'.");
+                    }
                 }
             }
-            else // Jeśli żaden profil nie jest wybrany
+            else
             {
                 CurrentProfileNameForEdit = string.Empty;
                 ModelNameInput = string.Empty;
                 CharacterNameInput = string.Empty;
-                ImageFiles = new ObservableCollection<ImageFileEntry>(); // Wyczyść listę plików
+                ImageFiles = new ObservableCollection<ImageFileEntry>();
             }
         }
 
