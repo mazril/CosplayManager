@@ -6,25 +6,25 @@
         xmlns:mah="http://metro.mahapps.com/winfx/xaml/controls"
         xmlns:iconPacks="http://metro.mahapps.com/winfx/xaml/iconpacks"
         xmlns:local="clr-namespace:CosplayManager.Views"
-        xmlns:viewModels="clr-namespace:CosplayManager.ViewModels"
+        xmlns:viewmodels="clr-namespace:CosplayManager.ViewModels"
         xmlns:converters="clr-namespace:CosplayManager.Converters"
         mc:Ignorable="d"
         Title="{Binding WindowTitle}" Height="700" Width="1000"
         WindowStartupLocation="CenterOwner"
         BorderThickness="1" BorderBrush="{DynamicResource MahApps.Brushes.Accent}"
         GlowBrush="{DynamicResource MahApps.Brushes.Accent}"
-        d:DataContext="{d:DesignInstance Type=viewModels:ManageProfileSuggestionsViewModel, IsDesignTimeCreatable=False}">
+        d:DataContext="{d:DesignInstance Type=viewmodels:ManageProfileSuggestionsViewModel, IsDesignTimeCreatable=False}">
 
     <mah:MetroWindow.Resources>
         <converters:BooleanToVisibilityConverter x:Key="BoolToVisConverter"/>
         <converters:InverseBooleanConverter x:Key="InverseBoolConverter"/>
 
-        <DataTemplate x:Key="SuggestedImageItemTemplate" DataType="{x:Type viewModels:SuggestedImageItemViewModel}">
+        <DataTemplate x:Key="SuggestedImageItemTemplate" DataType="{x:Type viewmodels:SuggestedImageItemViewModel}">
             <Border BorderBrush="LightGray" BorderThickness="1" Margin="5" Padding="5" Width="160">
                 <StackPanel>
                     <Grid Height="120" Width="150">
                         <Image Source="{Binding Thumbnail}" Stretch="Uniform" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                        <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,2,2,0" ToolTip="Zaznacz, aby dodać do profilu"/>
+                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,2,2,0" ToolTip="Zaznacz, aby dodać do profilu"/>
                         <ProgressBar Visibility="{Binding IsLoadingThumbnail, Converter={StaticResource BoolToVisConverter}}" 
                                      IsIndeterminate="True" Height="10" VerticalAlignment="Bottom"/>
                     </Grid>
@@ -35,12 +35,12 @@
             </Border>
         </DataTemplate>
 
-        <DataTemplate x:Key="ProfileImageItemTemplate" DataType="{x:Type viewModels:ProfileImageItemViewModel}">
+        <DataTemplate x:Key="ProfileImageItemTemplate" DataType="{x:Type viewmodels:ProfileImageItemViewModel}">
             <Border BorderBrush="LightGray" BorderThickness="1" Margin="5" Padding="5" Width="160">
                 <StackPanel>
                     <Grid Height="120" Width="150">
                         <Image Source="{Binding Thumbnail}" Stretch="Uniform" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                        <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,2,2,0" ToolTip="Zaznacz, aby przenieść do folderu Mix"/>
+                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,2,2,0" ToolTip="Zaznacz, aby przenieść do folderu Mix"/>
                         <ProgressBar Visibility="{Binding IsLoadingThumbnail, Converter={StaticResource BoolToVisConverter}}" 
                                      IsIndeterminate="True" Height="10" VerticalAlignment="Bottom"/>
                     </Grid>
@@ -67,17 +67,17 @@
                 <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
                     <TextBlock Text="Próg podobieństwa:" VerticalAlignment="Center" Margin="0,0,5,0"/>
                     <TextBlock Text="{Binding SimilarityThreshold, StringFormat={}{0:P0}}" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
-                    <Slider Value="{Binding SimilarityThreshold}" Minimum="0.5" Maximum="1.0" SmallChange="0.01" LargeChange="0.05" Width="200" VerticalAlignment="Center"/>
+                    <Slider Value="{Binding SimilarityThreshold, Mode=TwoWay}" Minimum="0.5" Maximum="1.0" SmallChange="0.01" LargeChange="0.05" Width="200" VerticalAlignment="Center"/>
                 </StackPanel>
                 <Button Grid.Column="1" Command="{Binding RefreshSuggestedCommand}" Content="ODŚWIEŻ SUGESTIE" HorizontalAlignment="Left" Margin="10,0,0,0" Style="{StaticResource MahApps.Styles.Button.Square.Accent}" IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"/>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
-                    <CheckBox IsChecked="{Binding Path=(viewModels:ManageProfileSuggestionsViewModel.SelectAllSuggested)}" VerticalAlignment="Center" Margin="0,0,10,0"
-                              Command="{Binding SelectAllSuggestedCommand}" ToolTip="Zaznacz/Odznacz wszystkie sugerowane">
+                    <CheckBox IsChecked="{Binding SelectAllSuggested, Mode=TwoWay}" VerticalAlignment="Center" Margin="0,0,10,0"
+                              ToolTip="Zaznacz/Odznacz wszystkie sugerowane">
                         <TextBlock Text="Zaznacz wszystkie sugerowane"/>
                     </CheckBox>
-                    <CheckBox IsChecked="{Binding Path=(viewModels:ManageProfileSuggestionsViewModel.SelectAllCurrentProfile)}" VerticalAlignment="Center"
-                              Command="{Binding SelectAllCurrentProfileCommand}" ToolTip="Zaznacz/Odznacz wszystkie w profilu">
+                    <CheckBox IsChecked="{Binding SelectAllCurrentProfile, Mode=TwoWay}" VerticalAlignment="Center"
+                              ToolTip="Zaznacz/Odznacz wszystkie w profilu">
                         <TextBlock Text="Zaznacz wszystkie w profilu"/>
                     </CheckBox>
                 </StackPanel>
