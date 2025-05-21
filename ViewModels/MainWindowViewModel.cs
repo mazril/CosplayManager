@@ -2812,5 +2812,5 @@ namespace CosplayManager.ViewModels
             public bool Equals(ImageFileEntry? x, ImageFileEntry? y) { if (ReferenceEquals(x, y)) return true; if (x is null || y is null) return false; return x.FilePath.Equals(y.FilePath, StringComparison.OrdinalIgnoreCase); }
             public int GetHashCode(ImageFileEntry obj) { return obj.FilePath?.GetHashCode(StringComparison.OrdinalIgnoreCase) ?? 0; }
         }
-    }
+    } 
 }
