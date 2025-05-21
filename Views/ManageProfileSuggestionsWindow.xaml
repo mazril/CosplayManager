@@ -1,0 +1,128 @@
+﻿<mah:MetroWindow x:Class="CosplayManager.Views.ManageProfileSuggestionsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:mah="http://metro.mahapps.com/winfx/xaml/controls"
+        xmlns:iconPacks="http://metro.mahapps.com/winfx/xaml/iconpacks"
+        xmlns:local="clr-namespace:CosplayManager.Views"
+        xmlns:viewModels="clr-namespace:CosplayManager.ViewModels"
+        xmlns:converters="clr-namespace:CosplayManager.Converters"
+        mc:Ignorable="d"
+        Title="{Binding WindowTitle}" Height="700" Width="1000"
+        WindowStartupLocation="CenterOwner"
+        BorderThickness="1" BorderBrush="{DynamicResource MahApps.Brushes.Accent}"
+        GlowBrush="{DynamicResource MahApps.Brushes.Accent}"
+        d:DataContext="{d:DesignInstance Type=viewModels:ManageProfileSuggestionsViewModel, IsDesignTimeCreatable=False}">
+
+    <mah:MetroWindow.Resources>
+        <converters:BooleanToVisibilityConverter x:Key="BoolToVisConverter"/>
+        <converters:InverseBooleanConverter x:Key="InverseBoolConverter"/>
+
+        <DataTemplate x:Key="SuggestedImageItemTemplate" DataType="{x:Type viewModels:SuggestedImageItemViewModel}">
+            <Border BorderBrush="LightGray" BorderThickness="1" Margin="5" Padding="5" Width="160">
+                <StackPanel>
+                    <Grid Height="120" Width="150">
+                        <Image Source="{Binding Thumbnail}" Stretch="Uniform" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,2,2,0" ToolTip="Zaznacz, aby dodać do profilu"/>
+                        <ProgressBar Visibility="{Binding IsLoadingThumbnail, Converter={StaticResource BoolToVisConverter}}" 
+                                     IsIndeterminate="True" Height="10" VerticalAlignment="Bottom"/>
+                    </Grid>
+                    <TextBlock Text="{Binding SourceFileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" HorizontalAlignment="Center" Margin="0,3,0,0"/>
+                    <TextBlock Text="{Binding SimilarityDisplayText}" HorizontalAlignment="Center" FontSize="11"/>
+                    <TextBlock Text="{Binding SourceDirectoryName}" HorizontalAlignment="Center" FontSize="10" Foreground="Gray" FontStyle="Italic"/>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <DataTemplate x:Key="ProfileImageItemTemplate" DataType="{x:Type viewModels:ProfileImageItemViewModel}">
+            <Border BorderBrush="LightGray" BorderThickness="1" Margin="5" Padding="5" Width="160">
+                <StackPanel>
+                    <Grid Height="120" Width="150">
+                        <Image Source="{Binding Thumbnail}" Stretch="Uniform" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,2,2,0" ToolTip="Zaznacz, aby przenieść do folderu Mix"/>
+                        <ProgressBar Visibility="{Binding IsLoadingThumbnail, Converter={StaticResource BoolToVisConverter}}" 
+                                     IsIndeterminate="True" Height="10" VerticalAlignment="Bottom"/>
+                    </Grid>
+                    <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" HorizontalAlignment="Center" Margin="0,3,0,0"/>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+    </mah:MetroWindow.Resources>
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" BorderBrush="LightGray" BorderThickness="0,0,0,1" Padding="5">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="Próg podobieństwa:" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <TextBlock Text="{Binding SimilarityThreshold, StringFormat={}{0:P0}}" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
+                    <Slider Value="{Binding SimilarityThreshold}" Minimum="0.5" Maximum="1.0" SmallChange="0.01" LargeChange="0.05" Width="200" VerticalAlignment="Center"/>
+                </StackPanel>
+                <Button Grid.Column="1" Command="{Binding RefreshSuggestedCommand}" Content="ODŚWIEŻ SUGESTIE" HorizontalAlignment="Left" Margin="10,0,0,0" Style="{StaticResource MahApps.Styles.Button.Square.Accent}" IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"/>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <CheckBox IsChecked="{Binding Path=(viewModels:ManageProfileSuggestionsViewModel.SelectAllSuggested)}" VerticalAlignment="Center" Margin="0,0,10,0"
+                              Command="{Binding SelectAllSuggestedCommand}" ToolTip="Zaznacz/Odznacz wszystkie sugerowane">
+                        <TextBlock Text="Zaznacz wszystkie sugerowane"/>
+                    </CheckBox>
+                    <CheckBox IsChecked="{Binding Path=(viewModels:ManageProfileSuggestionsViewModel.SelectAllCurrentProfile)}" VerticalAlignment="Center"
+                              Command="{Binding SelectAllCurrentProfileCommand}" ToolTip="Zaznacz/Odznacz wszystkie w profilu">
+                        <TextBlock Text="Zaznacz wszystkie w profilu"/>
+                    </CheckBox>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="1" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <GroupBox Header="{Binding SuggestedImages.Count, StringFormat='Sugerowane obrazy ({0})'}" Grid.Column="0" Style="{StaticResource MahApps.Styles.GroupBox}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ItemsControl ItemsSource="{Binding SuggestedImages}" ItemTemplate="{StaticResource SuggestedImageItemTemplate}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                </ScrollViewer>
+            </GroupBox>
+
+            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Background="LightGray"/>
+
+            <GroupBox Header="{Binding CurrentProfileImages.Count, StringFormat='Obecne obrazy w profilu ({0})'}" Grid.Column="2" Style="{StaticResource MahApps.Styles.GroupBox}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ItemsControl ItemsSource="{Binding CurrentProfileImages}" ItemTemplate="{StaticResource ProfileImageItemTemplate}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                </ScrollViewer>
+            </GroupBox>
+        </Grid>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="ZASTOSUJ ZMIANY" Command="{Binding ApplyChangesCommand}" Style="{StaticResource MahApps.Styles.Button.Square.Accent}" Margin="0,0,10,0" IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"/>
+            <Button Content="ANULUJ" Command="{Binding CancelCommand}" Style="{StaticResource MahApps.Styles.Button.Square}" IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"/>
+        </StackPanel>
+
+        <mah:ProgressRing IsActive="{Binding IsBusy}" Grid.RowSpan="3" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource MahApps.Brushes.Accent}"/>
+    </Grid>
+</mah:MetroWindow>
