@@ -428,7 +428,7 @@ namespace CosplayManager.Services
                         SimpleFileLogger.Log($"{totalRowsAffected} profiles for model '{modelName}' deleted from SQLite.");
                     }
                 }
-            }
+            } 
             return Task.CompletedTask;
         } 
 
