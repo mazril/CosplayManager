@@ -2908,7 +2908,7 @@ namespace CosplayManager.ViewModels
                 StatusMessage = "Anulowano automatyczne stosowanie dopasowań.";
                 progress.Report(new ProgressReport { ProcessedItems = 1, TotalItems = 1, StatusMessage = "Anulowano." });
                 return;
-            }
+            } 
 
             SimpleFileLogger.LogHighLevelInfo($"[ApplyAllMatchesForModel] Rozpoczęto automatyczne stosowanie {movesToApply.Count} dopasowań dla modelki: {modelName}. Token: {token.GetHashCode()}");
 
