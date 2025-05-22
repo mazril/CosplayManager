@@ -37,6 +37,7 @@ namespace CosplayManager.ViewModels
         private bool _isRefreshingProfilesPostMove = false;
 
         private const double DUPLICATE_SIMILARITY_THRESHOLD = 0.98;
+        private const double IDENTICAL_SOURCE_IMAGE_THRESHOLD = 0.995; // Próg dla identycznych obrazów źródłowych z Mix
         private CancellationTokenSource? _activeLongOperationCts;
 
         private const int MAX_CONCURRENT_EMBEDDING_REQUESTS = 4; // Używane przez _embeddingSemaphore
@@ -45,6 +46,7 @@ namespace CosplayManager.ViewModels
 
         private class ProcessingResult // Klasa pomocnicza do zwracania wyników z zadań asynchronicznych
         {
+            public Models.ProposedMove? ProposedMove { get; set; } // Dodajemy pole na surową propozycję
             public int FilesWithEmbeddingsIncrement { get; set; } = 0;
             public long AutoActionsIncrement { get; set; } = 0; // Zmienione na long
             public bool ProfileDataChanged { get; set; } = false;
@@ -1682,7 +1684,7 @@ namespace CosplayManager.ViewModels
         }
 
 
-        // Metoda do dopasowywania obrazów dla konkretnej modelki (już istnieje w Twoim pliku)
+        // Metoda do dopasowywania obrazów dla konkretnej modelki
         private async Task ExecuteMatchModelSpecificAsync(object? parameter, CancellationToken token, IProgress<ProgressReport> progress)
         {
             if (!(parameter is ModelDisplayViewModel modelVM)) { StatusMessage = "Błąd: Nie wybrano modelki do dopasowania."; MessageBox.Show(StatusMessage, "Błąd Wyboru", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
@@ -1691,133 +1693,113 @@ namespace CosplayManager.ViewModels
             var mixedFolders = new HashSet<string>(SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()), StringComparer.OrdinalIgnoreCase);
             if (!mixedFolders.Any()) { StatusMessage = "Błąd: Zdefiniuj foldery źródłowe ('Mix') w ustawieniach."; MessageBox.Show(StatusMessage, "Brak Folderów Mix", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
 
-            var movesForSuggestionWindowConcurrent = new ConcurrentBag<Models.ProposedMove>(); // Bezpieczne dla wątków
-            string modelPath = Path.Combine(LibraryRootPath, modelVM.ModelName); // Główny folder modelki
+            string modelPath = Path.Combine(LibraryRootPath, modelVM.ModelName);
             if (!Directory.Exists(modelPath)) { StatusMessage = $"Błąd: Folder modelki '{modelVM.ModelName}' nie istnieje w '{LibraryRootPath}'."; MessageBox.Show(StatusMessage, "Błąd Folderu Modelki", MessageBoxButton.OK, MessageBoxImage.Error); return; }
 
-            // Wyzeruj liczniki sugestii w UI przed rozpoczęciem
             await Application.Current.Dispatcher.InvokeAsync(() => { modelVM.PendingSuggestionsCount = 0; foreach (var cp_ui in modelVM.CharacterProfiles) cp_ui.PendingSuggestionsCount = 0; });
             token.ThrowIfCancellationRequested();
 
             List<string> allImagePathsInMix = new List<string>();
             foreach (var mixFolderName in mixedFolders)
             {
-                string currentMixPath = Path.Combine(modelPath, mixFolderName); // Np. Library/ModelName/Mix
+                string currentMixPath = Path.Combine(modelPath, mixFolderName);
                 if (Directory.Exists(currentMixPath))
                 {
                     allImagePathsInMix.AddRange(await _fileScannerService.ScanDirectoryAsync(currentMixPath));
                 }
             }
-            allImagePathsInMix = allImagePathsInMix.Distinct().ToList(); // Usuń duplikaty ścieżek, jeśli są
+            allImagePathsInMix = allImagePathsInMix.Distinct().ToList();
 
             long totalFilesToScanInMix = allImagePathsInMix.Count;
             if (totalFilesToScanInMix == 0)
             {
                 StatusMessage = $"Brak plików w folderach Mix dla modelki '{modelVM.ModelName}'.";
                 MessageBox.Show(StatusMessage, "Brak Plików", MessageBoxButton.OK, MessageBoxImage.Information);
-                progress.Report(new ProgressReport { ProcessedItems = 1, TotalItems = 1, StatusMessage = StatusMessage }); // Zakończ postęp
+                progress.Report(new ProgressReport { ProcessedItems = 1, TotalItems = 1, StatusMessage = StatusMessage });
                 return;
             }
 
             progress.Report(new ProgressReport { OperationName = $"Match dla '{modelVM.ModelName}'", ProcessedItems = 0, TotalItems = (int)totalFilesToScanInMix, StatusMessage = $"Skanowanie {totalFilesToScanInMix} plików w folderach Mix dla '{modelVM.ModelName}'..." });
 
-            long filesProcessedCount = 0; // Używaj long dla Interlocked
-            long filesWithEmbeddingsCount = 0; // Używaj long
-            long autoActionsCount = 0; // Używaj long
+            long filesProcessedCount = 0, filesWithEmbeddingsCount = 0, autoActionsCount = 0;
             bool anyProfileDataChanged = false;
-
-            var alreadySuggestedDuplicates = new ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)>(); // Do śledzenia już obsłużonych duplikatów graficznych
             var processingTasks = new List<Task<ProcessingResult>>();
+            var rawProposedMovesFromProcessing = new ConcurrentBag<Models.ProposedMove>();
 
             foreach (var imgPathFromMix in allImagePathsInMix)
             {
                 token.ThrowIfCancellationRequested();
                 processingTasks.Add(Task.Run(async () =>
                 {
-                    var res = await ProcessSingleImageForModelSpecificScanAsync(imgPathFromMix, modelVM, modelPath, token, movesForSuggestionWindowConcurrent, alreadySuggestedDuplicates, progress);
+                    var res = await ProcessSingleImageForModelSpecificScanAsync(imgPathFromMix, modelVM, modelPath, token, progress);
+                    if (res.ProposedMove != null) rawProposedMovesFromProcessing.Add(res.ProposedMove);
                     Interlocked.Increment(ref filesProcessedCount);
                     progress.Report(new ProgressReport { ProcessedItems = (int)Interlocked.Read(ref filesProcessedCount), TotalItems = (int)totalFilesToScanInMix, StatusMessage = $"Przetwarzanie {Path.GetFileName(imgPathFromMix)} ({Interlocked.Read(ref filesProcessedCount)}/{totalFilesToScanInMix})..." });
                     return res;
                 }, token));
             }
 
-            var taskResults = await Task.WhenAll(processingTasks); // Poczekaj na wszystkie zadania
+            var taskResults = await Task.WhenAll(processingTasks);
             token.ThrowIfCancellationRequested();
 
-            // Zbierz wyniki
-            foreach (var r in taskResults)
-            {
-                filesWithEmbeddingsCount += r.FilesWithEmbeddingsIncrement;
-                autoActionsCount += r.AutoActionsIncrement;
-                if (r.ProfileDataChanged) anyProfileDataChanged = true;
-            }
+            foreach (var r in taskResults) { filesWithEmbeddingsCount += r.FilesWithEmbeddingsIncrement; autoActionsCount += r.AutoActionsIncrement; if (r.ProfileDataChanged) anyProfileDataChanged = true; }
 
-            var movesForSuggestionWindow = movesForSuggestionWindowConcurrent.ToList();
-            SimpleFileLogger.LogHighLevelInfo($"MatchModelSpecific dla '{modelVM.ModelName}': Przeskanowano: {totalFilesToScanInMix}, Z embeddingami: {filesWithEmbeddingsCount}. Auto-akcje: {autoActionsCount}. Sugestie: {movesForSuggestionWindow.Count}. Profile zmodyfikowane: {anyProfileDataChanged}. Token: {token.GetHashCode()}");
+            // --- NOWY KROK: Filtrowanie surowych propozycji ---
+            var (uniqueBestQualityProposedMoves, duplicateSourceFilesFromMixToDelete) = FilterRawProposedMoves(rawProposedMovesFromProcessing.ToList());
+            // --- KONIEC NOWEGO KROKU ---
+
+            SimpleFileLogger.LogHighLevelInfo($"MatchModelSpecific dla '{modelVM.ModelName}': Przeskanowano: {totalFilesToScanInMix}, Z embeddingami: {filesWithEmbeddingsCount}. Auto-akcje: {autoActionsCount}. Sugestie po filtracji: {uniqueBestQualityProposedMoves.Count}. Gorsze duplikaty źródłowe do usunięcia: {duplicateSourceFilesFromMixToDelete.Count}. Profile zmodyfikowane: {anyProfileDataChanged}. Token: {token.GetHashCode()}");
             progress.Report(new ProgressReport { ProcessedItems = (int)totalFilesToScanInMix, TotalItems = (int)totalFilesToScanInMix, StatusMessage = $"Analiza dla '{modelVM.ModelName}' zakończona." });
 
-            // Zapisz sugestie do cache (dla tej konkretnej modelki)
-            _lastModelSpecificSuggestions = new List<Models.ProposedMove>(movesForSuggestionWindow);
-            _lastScannedModelNameForSuggestions = modelVM.ModelName; // Zaznacz, że cache dotyczy tej modelki
+            _lastModelSpecificSuggestions = uniqueBestQualityProposedMoves;
+            _lastScannedModelNameForSuggestions = modelVM.ModelName;
 
-            // Pokaż okno PreviewChanges, jeśli są jakieś sugestie
-            if (movesForSuggestionWindow.Any())
+            if (uniqueBestQualityProposedMoves.Any())
             {
                 bool? dialogOutcome = false;
                 List<Models.ProposedMove> approvedMoves = new List<Models.ProposedMove>();
-                await Application.Current.Dispatcher.InvokeAsync(() => // Operacje na UI w wątku UI
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    var vm = new PreviewChangesViewModel(movesForSuggestionWindow, SuggestionSimilarityThreshold);
+                    var vm = new PreviewChangesViewModel(uniqueBestQualityProposedMoves, SuggestionSimilarityThreshold);
                     var win = new PreviewChangesWindow { DataContext = vm, Owner = Application.Current.MainWindow };
-                    win.SetViewModelCloseAction(vm); // Umożliwia VM zamknięcie okna
+                    win.SetViewModelCloseAction(vm);
                     dialogOutcome = win.ShowDialog();
-                    if (dialogOutcome == true)
-                    {
-                        approvedMoves = vm.GetApprovedMoves(); // Pobierz zatwierdzone ruchy
-                    }
+                    if (dialogOutcome == true) approvedMoves = vm.GetApprovedMoves();
                 });
-                token.ThrowIfCancellationRequested(); // Sprawdź po zamknięciu dialogu
+                token.ThrowIfCancellationRequested();
 
                 if (dialogOutcome == true && approvedMoves.Any())
                 {
                     progress.Report(new ProgressReport { ProcessedItems = 0, TotalItems = approvedMoves.Count, StatusMessage = $"Stosowanie {approvedMoves.Count} zatwierdzonych zmian..." });
-                    if (await InternalHandleApprovedMovesAsync(approvedMoves, modelVM, null, token, progress)) anyProfileDataChanged = true;
-                    // Usuń zastosowane sugestie z głównej listy cache
+                    if (await InternalHandleApprovedMovesAsync(approvedMoves, modelVM, null, duplicateSourceFilesFromMixToDelete, token, progress)) anyProfileDataChanged = true;
                     _lastModelSpecificSuggestions.RemoveAll(s => approvedMoves.Any(ap => ap.SourceImage.FilePath == s.SourceImage.FilePath));
                 }
-                else if (dialogOutcome == false) // Użytkownik anulował
-                {
-                    StatusMessage = $"Anulowano stosowanie sugestii dla '{modelVM.ModelName}'.";
-                }
+                else if (dialogOutcome == false) StatusMessage = $"Anulowano stosowanie sugestii dla '{modelVM.ModelName}'.";
             }
 
             if (anyProfileDataChanged)
             {
                 SimpleFileLogger.LogHighLevelInfo($"ExecuteMatchModelSpecificAsync: Zmiany w profilach dla '{modelVM.ModelName}'. Odświeżanie listy profili.");
                 _isRefreshingProfilesPostMove = true;
-                await InternalExecuteLoadProfilesAsync(token, progress); // Odśwież listę profili
+                await InternalExecuteLoadProfilesAsync(token, progress);
                 _isRefreshingProfilesPostMove = false;
             }
 
-            RefreshPendingSuggestionCountsFromCache(); // Odśwież liczniki w UI
+            RefreshPendingSuggestionCountsFromCache();
             StatusMessage = $"Dla '{modelVM.ModelName}': {autoActionsCount} auto-akcji, {modelVM.PendingSuggestionsCount} oczekujących sugestii.";
 
-            // Komunikaty końcowe
-            if (!movesForSuggestionWindow.Any() && autoActionsCount > 0 && !anyProfileDataChanged) MessageBox.Show($"Zakończono automatyczne operacje dla '{modelVM.ModelName}'. Wykonano {autoActionsCount} akcji. Brak nowych sugestii.", "Operacje Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
-            else if (!movesForSuggestionWindow.Any() && autoActionsCount == 0 && !anyProfileDataChanged && totalFilesToScanInMix > 0) MessageBox.Show($"Brak nowych sugestii lub automatycznych akcji dla '{modelVM.ModelName}'.", "Brak Zmian", MessageBoxButton.OK, MessageBoxImage.Information);
+            if (!uniqueBestQualityProposedMoves.Any() && autoActionsCount > 0 && !anyProfileDataChanged) MessageBox.Show($"Zakończono automatyczne operacje dla '{modelVM.ModelName}'. Wykonano {autoActionsCount} akcji. Brak nowych sugestii.", "Operacje Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
+            else if (!uniqueBestQualityProposedMoves.Any() && autoActionsCount == 0 && !anyProfileDataChanged && totalFilesToScanInMix > 0) MessageBox.Show($"Brak nowych sugestii lub automatycznych akcji dla '{modelVM.ModelName}'.", "Brak Zmian", MessageBoxButton.OK, MessageBoxImage.Information);
             else if (totalFilesToScanInMix == 0 && !anyProfileDataChanged) MessageBox.Show($"Nie znaleziono obrazów w folderach Mix dla '{modelVM.ModelName}'.", "Brak Plików", MessageBoxButton.OK, MessageBoxImage.Information);
-            // Jeśli były sugestie, okno PreviewChanges już poinformowało użytkownika
         }
 
-        // Metoda do przetwarzania pojedynczego obrazu dla MatchModelSpecific (już istnieje w Twoim pliku)
+        // Metoda do przetwarzania pojedynczego obrazu (zmodyfikowana sygnatura ProcessSingleImage... aby zwracała ProposedMove)
         private async Task<ProcessingResult> ProcessSingleImageForModelSpecificScanAsync(
             string imgPathFromMix,
             ModelDisplayViewModel modelVM,
-            string modelPath, // Ścieżka do głównego folderu modelki
+            string modelPath,
             CancellationToken token,
-            ConcurrentBag<Models.ProposedMove> movesForSuggestionWindowConcurrent,
-            ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)> alreadySuggestedGraphicDuplicatesConcurrent, // Do śledzenia duplikatów
-            IProgress<ProgressReport> progress) // Przekaż progress do ProcessDuplicateOrSuggestNewAsync
+            IProgress<ProgressReport> progress)
         {
             var result = new ProcessingResult();
             if (token.IsCancellationRequested || !File.Exists(imgPathFromMix)) return result;
@@ -1825,7 +1807,6 @@ namespace CosplayManager.ViewModels
             var sourceEntry = await _imageMetadataService.ExtractMetadataAsync(imgPathFromMix);
             if (sourceEntry == null) { SimpleFileLogger.LogWarning($"MatchModelSpecific(AsyncItem): Błąd ładowania metadanych dla: {imgPathFromMix}."); return result; }
 
-            // Pobierz embedding, używając semafora do ograniczenia współbieżności
             await _embeddingSemaphore.WaitAsync(token);
             float[]? sourceEmbedding = null;
             try
@@ -1839,15 +1820,13 @@ namespace CosplayManager.ViewModels
             }
 
             if (sourceEmbedding == null) { SimpleFileLogger.LogWarning($"MatchModelSpecific(AsyncItem): Błąd uzyskania embeddingu dla: {sourceEntry.FilePath}."); return result; }
-            result.FilesWithEmbeddingsIncrement = 1; // Zlicz plik z embeddingiem
+            result.FilesWithEmbeddingsIncrement = 1;
             if (token.IsCancellationRequested) return result;
 
-            // Zasugeruj kategorię tylko w obrębie tej modelki
             var bestSuggestionForModel = _profileService.SuggestCategory(sourceEmbedding, SuggestionSimilarityThreshold, modelVM.ModelName);
 
             if (bestSuggestionForModel != null)
             {
-                // POPRAWKA DEKONSTRUKCJI
                 CategoryProfile targetProfile = bestSuggestionForModel.Item1;
                 double similarity = bestSuggestionForModel.Item2;
 
@@ -1855,7 +1834,7 @@ namespace CosplayManager.ViewModels
 
                 if (profilesWereModified) result.ProfileDataChanged = true;
                 if (wasAutoHandled) result.AutoActionsIncrement = 1;
-                else if (proposedMove != null) movesForSuggestionWindowConcurrent.Add(proposedMove);
+                else if (proposedMove != null) result.ProposedMove = proposedMove; // Zapisz surową propozycję
             }
             else
             {
@@ -1864,30 +1843,26 @@ namespace CosplayManager.ViewModels
             return result;
         }
 
-        // Metoda do globalnego sugerowania obrazów (już istnieje w Twoim pliku)
+
+        // Globalne sugerowanie obrazów (analogiczne zmiany jak w MatchModelSpecific)
         private async Task ExecuteSuggestImagesAsync(CancellationToken token, IProgress<ProgressReport> progress)
         {
-            ClearModelSpecificSuggestionsCache(); // Wyczyść poprzednie sugestie (bo to skan globalny)
+            ClearModelSpecificSuggestionsCache();
             token.ThrowIfCancellationRequested();
 
             var mixedFolders = new HashSet<string>(SourceFolderNamesInput.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()), StringComparer.OrdinalIgnoreCase);
             if (!mixedFolders.Any()) { StatusMessage = "Błąd: Zdefiniuj foldery źródłowe ('Mix') w ustawieniach."; MessageBox.Show(StatusMessage, "Brak Folderów Mix", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
 
-            var allCollectedSuggestionsGlobalConcurrent = new ConcurrentBag<Models.ProposedMove>();
-            var alreadySuggestedDuplicates = new ConcurrentBag<(float[] embedding, string targetCategoryName, string sourceFilePath)>(); // Do śledzenia duplikatów
-
-            // Wyzeruj liczniki sugestii w UI
             await Application.Current.Dispatcher.InvokeAsync(() => { foreach (var mVM_ui in HierarchicalProfilesList) { mVM_ui.PendingSuggestionsCount = 0; foreach (var cp_ui in mVM_ui.CharacterProfiles) cp_ui.PendingSuggestionsCount = 0; } });
             token.ThrowIfCancellationRequested();
 
-            var allModelsCurrentlyInList = HierarchicalProfilesList.ToList(); // Pracuj na kopii listy modeli
+            var allModelsCurrentlyInList = HierarchicalProfilesList.ToList();
             List<string> allImagePathsToScanGlobal = new List<string>();
 
-            // Zbierz wszystkie pliki ze wszystkich folderów "Mix" wszystkich modelek
             foreach (var modelVM in allModelsCurrentlyInList)
             {
                 string modelPath = Path.Combine(LibraryRootPath, modelVM.ModelName);
-                if (!Directory.Exists(modelPath) || !modelVM.HasCharacterProfiles) continue; // Pomijaj modelki bez profili lub folderu
+                if (!Directory.Exists(modelPath) || !modelVM.HasCharacterProfiles) continue;
 
                 foreach (var mixFolderName in mixedFolders)
                 {
@@ -1898,7 +1873,7 @@ namespace CosplayManager.ViewModels
                     }
                 }
             }
-            allImagePathsToScanGlobal = allImagePathsToScanGlobal.Distinct().ToList(); // Unikalne ścieżki
+            allImagePathsToScanGlobal = allImagePathsToScanGlobal.Distinct().ToList();
 
             long totalFilesToProcess = allImagePathsToScanGlobal.Count;
             if (totalFilesToProcess == 0)
@@ -1911,16 +1886,15 @@ namespace CosplayManager.ViewModels
 
             progress.Report(new ProgressReport { OperationName = "Globalne Sugestie", ProcessedItems = 0, TotalItems = (int)totalFilesToProcess, StatusMessage = $"Skanowanie {totalFilesToProcess} plików ze wszystkich folderów Mix..." });
 
-            long filesProcessedCount = 0; // Użyj long
-            long filesWithEmbeddingsCount = 0; // Użyj long
-            long autoActionsCount = 0; // Użyj long
+            long filesProcessedCount = 0, filesWithEmbeddingsCount = 0, autoActionsCount = 0;
             bool anyProfileDataChanged = false;
             var processingTasks = new List<Task<ProcessingResult>>();
+            var rawProposedMovesFromProcessingGlobal = new ConcurrentBag<Models.ProposedMove>();
+
 
             foreach (var imgPathFromMix in allImagePathsToScanGlobal)
             {
                 token.ThrowIfCancellationRequested();
-                // Znajdź, do której modelki należy ten plik z folderu Mix
                 string? modelNameForThisMixFile = GetModelNameFromFilePathInLibrary(imgPathFromMix, mixedFolders);
                 if (string.IsNullOrEmpty(modelNameForThisMixFile))
                 {
@@ -1930,18 +1904,18 @@ namespace CosplayManager.ViewModels
                 }
 
                 var modelVM = allModelsCurrentlyInList.FirstOrDefault(m => m.ModelName.Equals(modelNameForThisMixFile, StringComparison.OrdinalIgnoreCase));
-                if (modelVM == null || !modelVM.HasCharacterProfiles) // Jeśli modelka nie ma profili, nie ma do czego sugerować
+                if (modelVM == null || !modelVM.HasCharacterProfiles)
                 {
                     Interlocked.Increment(ref filesProcessedCount);
                     progress.Report(new ProgressReport { ProcessedItems = (int)Interlocked.Read(ref filesProcessedCount), TotalItems = (int)totalFilesToProcess, StatusMessage = $"Pomijanie {Path.GetFileName(imgPathFromMix)} (brak profili dla modelki {modelNameForThisMixFile})..." });
                     continue;
                 }
-                string modelPath = Path.Combine(LibraryRootPath, modelVM.ModelName); // Ścieżka do folderu tej modelki
+                string modelPath = Path.Combine(LibraryRootPath, modelVM.ModelName);
 
                 processingTasks.Add(Task.Run(async () =>
                 {
-                    // Użyj ProcessSingleImageForModelSpecificScanAsync, bo logika jest ta sama, tylko kontekst wywołania inny
-                    var res = await ProcessSingleImageForModelSpecificScanAsync(imgPathFromMix, modelVM, modelPath, token, allCollectedSuggestionsGlobalConcurrent, alreadySuggestedDuplicates, progress);
+                    var res = await ProcessSingleImageForModelSpecificScanAsync(imgPathFromMix, modelVM, modelPath, token, progress);
+                    if (res.ProposedMove != null) rawProposedMovesFromProcessingGlobal.Add(res.ProposedMove);
                     Interlocked.Increment(ref filesProcessedCount);
                     progress.Report(new ProgressReport { ProcessedItems = (int)Interlocked.Read(ref filesProcessedCount), TotalItems = (int)totalFilesToProcess, StatusMessage = $"Skan globalny: {Path.GetFileName(imgPathFromMix)} ({Interlocked.Read(ref filesProcessedCount)}/{totalFilesToProcess})..." });
                     return res;
@@ -1953,15 +1927,18 @@ namespace CosplayManager.ViewModels
 
             foreach (var r in taskResults) { filesWithEmbeddingsCount += r.FilesWithEmbeddingsIncrement; autoActionsCount += r.AutoActionsIncrement; if (r.ProfileDataChanged) anyProfileDataChanged = true; }
 
-            var allCollectedSuggestionsGlobal = allCollectedSuggestionsGlobalConcurrent.ToList();
-            SimpleFileLogger.LogHighLevelInfo($"ExecuteSuggestImagesAsync: Globalne skanowanie zakończone. Przeskanowano: {totalFilesToProcess}, Z embeddingami: {filesWithEmbeddingsCount}, Auto-akcje: {autoActionsCount}, Sugestie: {allCollectedSuggestionsGlobal.Count}. Profile zmodyfikowane: {anyProfileDataChanged}. Token: {token.GetHashCode()}");
+            // --- NOWY KROK: Filtrowanie surowych propozycji ---
+            var (uniqueBestQualityProposedMovesGlobal, duplicateSourceFilesFromMixToDeleteGlobal) = FilterRawProposedMoves(rawProposedMovesFromProcessingGlobal.ToList());
+            // --- KONIEC NOWEGO KROKU ---
+
+
+            SimpleFileLogger.LogHighLevelInfo($"ExecuteSuggestImagesAsync: Globalne skanowanie zakończone. Przeskanowano: {totalFilesToProcess}, Z embeddingami: {filesWithEmbeddingsCount}, Auto-akcje: {autoActionsCount}, Sugestie po filtracji: {uniqueBestQualityProposedMovesGlobal.Count}. Gorsze duplikaty do usunięcia z Mix: {duplicateSourceFilesFromMixToDeleteGlobal.Count}. Profile zmodyfikowane: {anyProfileDataChanged}. Token: {token.GetHashCode()}");
             progress.Report(new ProgressReport { ProcessedItems = (int)totalFilesToProcess, TotalItems = (int)totalFilesToProcess, StatusMessage = "Globalne wyszukiwanie sugestii zakończone." });
 
-            // Zapisz wszystkie zebrane sugestie jako _lastModelSpecificSuggestions, ale zaznacz, że to skan globalny
-            _lastModelSpecificSuggestions = new List<Models.ProposedMove>(allCollectedSuggestionsGlobal);
-            _lastScannedModelNameForSuggestions = null; // null oznacza, że cache zawiera sugestie globalne
+            _lastModelSpecificSuggestions = uniqueBestQualityProposedMovesGlobal;
+            _lastScannedModelNameForSuggestions = null;
 
-            StatusMessage = $"Globalne wyszukiwanie zakończone: {autoActionsCount} auto-akcji, {allCollectedSuggestionsGlobal.Count} wszystkich sugestii.";
+            StatusMessage = $"Globalne wyszukiwanie zakończone: {autoActionsCount} auto-akcji, {uniqueBestQualityProposedMovesGlobal.Count} wszystkich sugestii.";
 
             if (anyProfileDataChanged)
             {
@@ -1970,14 +1947,119 @@ namespace CosplayManager.ViewModels
                 await InternalExecuteLoadProfilesAsync(token, progress);
                 _isRefreshingProfilesPostMove = false;
             }
-            RefreshPendingSuggestionCountsFromCache(); // Odśwież UI z nowymi licznikami
+            RefreshPendingSuggestionCountsFromCache();
+
+            // Jeśli są jakiekolwiek sugestie, poinformuj użytkownika, że może je przejrzeć, ale nie otwieraj okna automatycznie dla globalnego skanu.
+            // Użytkownik może wtedy kliknąć na konkretny profil modelki/postaci, aby zobaczyć te sugestie w nowym oknie ManageProfileSuggestionsWindow.
+            // Jeśli są też gorszej jakości duplikaty do usunięcia z Mix, można je usunąć automatycznie lub dać opcję.
+            // Na razie usuniemy je automatycznie, jeśli użytkownik zdecyduje się zastosować jakiekolwiek sugestie poprzez okno ManageProfileSuggestionsWindow dla konkretnego profilu,
+            // LUB jeśli uruchomi "ApplyAllMatchesForModelCommand" dla modelu, którego dotyczą te gorsze duplikaty.
+            // Potrzebujemy sposobu przekazania `duplicateSourceFilesFromMixToDeleteGlobal` do `InternalHandleApprovedMovesAsync`
+            // gdy jest ono wywoływane z `ManageProfileSuggestionsViewModel` lub `ApplyAllMatchesForModelCommand`.
+
+            // Dla uproszczenia, jeśli są `duplicateSourceFilesFromMixToDeleteGlobal`, a nie ma `uniqueBestQualityProposedMovesGlobal`,
+            // możemy je po prostu usunąć teraz, bo nie ma czego proponować.
+            if (duplicateSourceFilesFromMixToDeleteGlobal.Any() && !uniqueBestQualityProposedMovesGlobal.Any() && autoActionsCount == 0)
+            {
+                if (MessageBox.Show($"Globalne skanowanie wykryło {duplicateSourceFilesFromMixToDeleteGlobal.Count} gorszej jakości duplikatów obrazów w folderach Mix, które nie mają lepszych odpowiedników do zasugerowania. Czy chcesz je teraz usunąć?",
+                    "Usuwanie Gorszych Duplikatów z Mix", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+                {
+                    progress.Report(new ProgressReport { OperationName = "Usuwanie Duplikatów z Mix", ProcessedItems = 0, TotalItems = duplicateSourceFilesFromMixToDeleteGlobal.Count, StatusMessage = $"Usuwanie {duplicateSourceFilesFromMixToDeleteGlobal.Count} duplikatów z Mix..." });
+                    int deletedCount = 0;
+                    foreach (var pathToDelete in duplicateSourceFilesFromMixToDeleteGlobal)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        try
+                        {
+                            if (File.Exists(pathToDelete))
+                            {
+                                File.Delete(pathToDelete);
+                                deletedCount++;
+                                progress.Report(new ProgressReport { ProcessedItems = deletedCount, TotalItems = duplicateSourceFilesFromMixToDeleteGlobal.Count, StatusMessage = $"Usunięto z Mix: {Path.GetFileName(pathToDelete)}" });
+                            }
+                        }
+                        catch (Exception ex) { SimpleFileLogger.LogError($"Błąd podczas usuwania duplikatu z Mix '{pathToDelete}' (globalny skan)", ex); }
+                    }
+                    StatusMessage += $" Usunięto {deletedCount} gorszych duplikatów z folderów Mix.";
+                    SimpleFileLogger.LogHighLevelInfo($"Globalny skan: Usunięto {deletedCount} gorszych duplikatów z folderów Mix (brak lepszych sugestii).");
+                }
+            }
+
 
             string completionMessage = StatusMessage;
-            if (allCollectedSuggestionsGlobal.Any()) completionMessage += " Użyj menu kontekstowego na profilach postaci, aby przejrzeć i zastosować sugestie.";
-            else if (autoActionsCount == 0 && totalFilesToProcess > 0) completionMessage = "Globalne wyszukiwanie nie znalazło żadnych nowych sugestii ani nie wykonało automatycznych akcji.";
+            if (uniqueBestQualityProposedMovesGlobal.Any()) completionMessage += " Użyj menu kontekstowego na profilach postaci, aby przejrzeć i zastosować sugestie.";
+            else if (autoActionsCount == 0 && totalFilesToProcess > 0 && !duplicateSourceFilesFromMixToDeleteGlobal.Any()) completionMessage = "Globalne wyszukiwanie nie znalazło żadnych nowych sugestii ani nie wykonało automatycznych akcji.";
             else if (totalFilesToProcess == 0) completionMessage = "Nie znaleziono żadnych plików w folderach Mix do globalnego skanowania.";
             MessageBox.Show(completionMessage, "Globalne Wyszukiwanie Sugestii Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
         }
+
+
+        // NOWA Metoda do filtrowania surowych propozycji
+        private (List<Models.ProposedMove> uniqueBestQualityMoves, List<string> duplicateSourcePathsToDelete) FilterRawProposedMoves(List<Models.ProposedMove> rawMoves)
+        {
+            var uniqueBestQualityProposedMoves = new List<Models.ProposedMove>();
+            var duplicateSourcePathsToDelete = new List<string>();
+            var processedSourceImageIndices = new HashSet<int>(); // Indeksy z rawMoves
+
+            if (rawMoves == null || !rawMoves.Any())
+            {
+                return (uniqueBestQualityProposedMoves, duplicateSourcePathsToDelete);
+            }
+
+            for (int i = 0; i < rawMoves.Count; i++)
+            {
+                if (processedSourceImageIndices.Contains(i)) continue;
+
+                var currentMove = rawMoves[i];
+                // Jeśli obraz źródłowy nie ma wektora cech, nie możemy go porównać, więc traktujemy go jako unikalny
+                if (currentMove.SourceImage.FeatureVector == null)
+                {
+                    uniqueBestQualityProposedMoves.Add(currentMove);
+                    processedSourceImageIndices.Add(i);
+                    continue;
+                }
+
+                var identicalGroup = new List<Models.ProposedMove> { currentMove };
+                processedSourceImageIndices.Add(i);
+
+                for (int j = i + 1; j < rawMoves.Count; j++)
+                {
+                    if (processedSourceImageIndices.Contains(j)) continue;
+
+                    var otherMove = rawMoves[j];
+                    if (otherMove.SourceImage.FeatureVector == null) continue; // Nie można porównać
+
+                    if (Utils.MathUtils.CalculateCosineSimilarity(currentMove.SourceImage.FeatureVector, otherMove.SourceImage.FeatureVector) >= IDENTICAL_SOURCE_IMAGE_THRESHOLD)
+                    {
+                        identicalGroup.Add(otherMove);
+                        processedSourceImageIndices.Add(j);
+                    }
+                }
+
+                if (identicalGroup.Any())
+                {
+                    Models.ProposedMove bestQualityMoveInGroup = identicalGroup.First();
+                    foreach (var moveInGroup in identicalGroup.Skip(1))
+                    {
+                        if (IsImageBetter(moveInGroup.SourceImage, bestQualityMoveInGroup.SourceImage))
+                        {
+                            bestQualityMoveInGroup = moveInGroup;
+                        }
+                    }
+                    uniqueBestQualityProposedMoves.Add(bestQualityMoveInGroup);
+
+                    foreach (var moveInGroup in identicalGroup)
+                    {
+                        if (moveInGroup != bestQualityMoveInGroup)
+                        {
+                            duplicateSourcePathsToDelete.Add(moveInGroup.SourceImage.FilePath);
+                        }
+                    }
+                }
+            }
+            return (uniqueBestQualityProposedMoves, duplicateSourcePathsToDelete.Distinct().ToList());
+        }
+
 
         // Pomocnicza metoda do ustalenia nazwy modelki na podstawie ścieżki pliku w folderze Mix
         private string? GetModelNameFromFilePathInLibrary(string filePath, HashSet<string> mixedFolderNames)
@@ -2073,7 +2155,10 @@ namespace CosplayManager.ViewModels
             if (outcome == true && approved.Any())
             {
                 progress.Report(new ProgressReport { ProcessedItems = 0, TotalItems = approved.Count, StatusMessage = $"Stosowanie {approved.Count} zatwierdzonych zmian..." });
-                if (await InternalHandleApprovedMovesAsync(approved, modelVM, charProfileForSuggestions, token, progress)) anyProfileDataChanged = true;
+                // UWAGA: Tutaj nie przekazujemy listy `duplicateSourceFilesFromMixToDelete`, bo to jest CheckCharacterSuggestions,
+                // które operuje na już przefiltrowanych `_lastModelSpecificSuggestions`.
+                // Dedykowane usuwanie gorszych duplikatów z Mix jest powiązane z `ExecuteMatchModelSpecificAsync` i `ExecuteSuggestImagesAsync`.
+                if (await InternalHandleApprovedMovesAsync(approved, modelVM, charProfileForSuggestions, new List<string>(), token, progress)) anyProfileDataChanged = true;
                 // Usuń zastosowane sugestie z głównej listy cache
                 _lastModelSpecificSuggestions.RemoveAll(s => approved.Any(ap => ap.SourceImage.FilePath == s.SourceImage.FilePath));
             }
@@ -2164,12 +2249,18 @@ namespace CosplayManager.ViewModels
             });
         }
 
-        // Metoda do obsługi zatwierdzonych ruchów (już istnieje w Twoim pliku)
-        private async Task<bool> InternalHandleApprovedMovesAsync(List<Models.ProposedMove> approvedMoves, ModelDisplayViewModel? specificModelVM, CategoryProfile? specificCharacterProfile, CancellationToken token, IProgress<ProgressReport> progress)
+        // Metoda do obsługi zatwierdzonych ruchów
+        private async Task<bool> InternalHandleApprovedMovesAsync(
+            List<Models.ProposedMove> approvedMoves,
+            ModelDisplayViewModel? specificModelVM, // Może być null, jeśli globalne
+            CategoryProfile? specificCharacterProfile, // Może być null
+            List<string> graphicallyIdenticalSourceDuplicatesInMixToDelete, // NOWY PARAMETR
+            CancellationToken token,
+            IProgress<ProgressReport> progress)
         {
             int successfulMoves = 0, copyErrors = 0, deleteErrors = 0, skippedQuality = 0, skippedOther = 0;
             bool anyProfileActuallyModified = false;
-            var processedSourcePathsForThisBatch = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // Śledź przetworzone pliki źródłowe w tej partii
+            var processedSourcePathsForThisBatch = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             int totalMovesToProcess = approvedMoves.Count;
             progress.Report(new ProgressReport { OperationName = "Stosowanie Zmian", ProcessedItems = 0, TotalItems = totalMovesToProcess, StatusMessage = $"Stosowanie {totalMovesToProcess} zatwierdzonych zmian..." });
@@ -2181,13 +2272,12 @@ namespace CosplayManager.ViewModels
                 progress.Report(new ProgressReport { ProcessedItems = i + 1, TotalItems = totalMovesToProcess, StatusMessage = $"Przenoszenie: {Path.GetFileName(move.SourceImage.FilePath)} (Akcja: {move.Action})..." });
 
                 string sourcePath = move.SourceImage.FilePath;
-                string targetPath = move.ProposedTargetPath; // To jest proponowana ścieżka (może wymagać unikalnej nazwy)
-                string originalTargetDirectory = Path.GetDirectoryName(targetPath) ?? string.Empty; // Folder docelowy
+                string targetPath = move.ProposedTargetPath;
+                string originalTargetDirectory = Path.GetDirectoryName(targetPath) ?? string.Empty;
                 var actionType = move.Action;
                 bool operationSuccess = false;
-                bool shouldDeleteSourceAfterCopy = false; // Flaga, czy źródło powinno być usunięte
-                string finalTargetPath = targetPath; // Ścieżka, pod którą plik faktycznie zostanie zapisany
-
+                bool shouldDeleteSourceAfterCopy = false;
+                string finalTargetPath = targetPath;
 
                 try
                 {
@@ -2196,67 +2286,57 @@ namespace CosplayManager.ViewModels
                     if (string.IsNullOrEmpty(originalTargetDirectory))
                     { SimpleFileLogger.LogWarning($"[HandleApproved] Błędny folder docelowy dla '{targetPath}'. Pomijanie."); skippedOther++; continue; }
 
-                    Directory.CreateDirectory(originalTargetDirectory); // Upewnij się, że folder docelowy istnieje
-
+                    Directory.CreateDirectory(originalTargetDirectory);
 
                     switch (actionType)
                     {
                         case ProposedMoveActionType.CopyNew:
-                        case ProposedMoveActionType.ConflictKeepBoth: // Traktujemy podobnie, generując unikalną nazwę
-                            // Jeśli plik docelowy już istnieje (i nie jest tym samym plikiem), wygeneruj unikalną nazwę
+                        case ProposedMoveActionType.ConflictKeepBoth:
                             if (File.Exists(finalTargetPath) && !string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(finalTargetPath), StringComparison.OrdinalIgnoreCase))
                             {
                                 finalTargetPath = GenerateUniqueTargetPath(originalTargetDirectory, Path.GetFileName(sourcePath), actionType == ProposedMoveActionType.ConflictKeepBoth ? "_conflict_approved" : "_new_approved");
                             }
                             else if (string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(finalTargetPath), StringComparison.OrdinalIgnoreCase))
                             {
-                                // Plik źródłowy jest już w miejscu docelowym. Nic nie rób z plikiem.
-                                operationSuccess = true;
-                                shouldDeleteSourceAfterCopy = false; // Nie usuwaj, bo to ten sam plik
+                                operationSuccess = true; shouldDeleteSourceAfterCopy = false;
                                 SimpleFileLogger.Log($"[HandleApproved] Plik '{sourcePath}' jest już w miejscu docelowym. Akcja {actionType} pominięta dla pliku.");
                                 break;
                             }
-                            await Task.Run(() => File.Copy(sourcePath, finalTargetPath, false), token); // Kopiuj bez nadpisywania (bo nazwa jest już unikalna lub nowa)
-                            operationSuccess = true;
-                            shouldDeleteSourceAfterCopy = true; // Po skopiowaniu, oryginał (z Mix) powinien być usunięty
-                            break;
-
-                        case ProposedMoveActionType.OverwriteExisting:
-                            // finalTargetPath pozostaje move.ProposedTargetPath
-                            if (string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(finalTargetPath), StringComparison.OrdinalIgnoreCase))
-                            {
-                                operationSuccess = true; shouldDeleteSourceAfterCopy = false; // Ten sam plik, nic do zrobienia
-                                SimpleFileLogger.Log($"[HandleApproved] Plik '{sourcePath}' jest już w miejscu docelowym. Akcja {actionType} pominięta.");
-                                break;
-                            }
-                            await Task.Run(() => File.Copy(sourcePath, finalTargetPath, true), token); // Nadpisz istniejący
+                            await Task.Run(() => File.Copy(sourcePath, finalTargetPath, false), token);
                             operationSuccess = true;
                             shouldDeleteSourceAfterCopy = true;
                             break;
 
-                        case ProposedMoveActionType.KeepExistingDeleteSource: // Użytkownik wybrał, aby zachować istniejący, a usunąć źródłowy
-                            // Sprawdź, czy plik docelowy faktycznie istnieje
+                        case ProposedMoveActionType.OverwriteExisting:
+                            if (string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(finalTargetPath), StringComparison.OrdinalIgnoreCase))
+                            {
+                                operationSuccess = true; shouldDeleteSourceAfterCopy = false;
+                                SimpleFileLogger.Log($"[HandleApproved] Plik '{sourcePath}' jest już w miejscu docelowym. Akcja {actionType} pominięta.");
+                                break;
+                            }
+                            await Task.Run(() => File.Copy(sourcePath, finalTargetPath, true), token);
+                            operationSuccess = true;
+                            shouldDeleteSourceAfterCopy = true;
+                            break;
+
+                        case ProposedMoveActionType.KeepExistingDeleteSource:
                             if (!File.Exists(finalTargetPath) && !string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(finalTargetPath), StringComparison.OrdinalIgnoreCase))
                             {
-                                // Jeśli plik docelowy nie istnieje (a powinien być zachowany), to jest to błąd logiki lub danych
                                 SimpleFileLogger.LogWarning($"[HandleApproved] Akcja KeepExisting, ale plik docelowy '{finalTargetPath}' nie istnieje. Pomijam usuwanie źródła.");
                                 skippedOther++; operationSuccess = false; shouldDeleteSourceAfterCopy = false;
                                 break;
                             }
-                            // Jeśli plik źródłowy i docelowy to ten sam plik, nic nie rób (już jest "zachowany")
                             if (string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(finalTargetPath), StringComparison.OrdinalIgnoreCase))
                             {
                                 operationSuccess = true; shouldDeleteSourceAfterCopy = false;
                                 SimpleFileLogger.Log($"[HandleApproved] Akcja KeepExisting, plik źródłowy i docelowy to ten sam plik. Nic do zrobienia.");
                             }
-                            else // Pliki są różne, więc usuń źródłowy
+                            else
                             {
-                                operationSuccess = true; // Operacja "zachowania istniejącego" powiodła się
-                                shouldDeleteSourceAfterCopy = true; // Usuń źródłowy
+                                operationSuccess = true;
+                                shouldDeleteSourceAfterCopy = true;
                                 SimpleFileLogger.Log($"[HandleApproved] Akcja KeepExisting. Zachowano '{finalTargetPath}', źródło '{sourcePath}' zostanie usunięte.");
                             }
-                            // Jeśli jakość była powodem, można to inaczej logować
-                            // if (move.Reason == "Quality") skippedQuality++; else skippedOther++;
                             break;
 
                         default:
@@ -2269,15 +2349,15 @@ namespace CosplayManager.ViewModels
                     if (operationSuccess)
                     {
                         successfulMoves++;
-                        processedSourcePathsForThisBatch.Add(sourcePath); // Dodaj oryginalną ścieżkę źródłową do przetworzonych
+                        processedSourcePathsForThisBatch.Add(sourcePath);
 
                         string? oldPathForProfileUpdate = null;
-                        string? newPathForProfileUpdate = finalTargetPath; // Domyślnie nowa ścieżka to miejsce docelowe kopii
+                        string? newPathForProfileUpdate = finalTargetPath;
 
                         if (shouldDeleteSourceAfterCopy && File.Exists(sourcePath) &&
                             !string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(finalTargetPath), StringComparison.OrdinalIgnoreCase))
                         {
-                            oldPathForProfileUpdate = sourcePath; // Oryginalne źródło zostanie usunięte
+                            oldPathForProfileUpdate = sourcePath;
                             try
                             {
                                 await Task.Run(() => File.Delete(sourcePath), token);
@@ -2291,41 +2371,67 @@ namespace CosplayManager.ViewModels
                         }
                         else if (shouldDeleteSourceAfterCopy && string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(finalTargetPath), StringComparison.OrdinalIgnoreCase))
                         {
-                            // Jeśli źródło i cel to ten sam plik, a mieliśmy go "usunąć po skopiowaniu",
-                            // oznacza to, że plik po prostu zostaje w profilu.
-                            // Nie ma tu oldPath do usunięcia z innych profili, a newPath to ten sam plik.
                             oldPathForProfileUpdate = null;
-                            newPathForProfileUpdate = sourcePath; // Plik pozostaje pod tą ścieżką w profilu docelowym
+                            newPathForProfileUpdate = sourcePath;
                         }
                         else if (!shouldDeleteSourceAfterCopy && string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(finalTargetPath), StringComparison.OrdinalIgnoreCase))
                         {
-                            // Przypadek, gdy plik źródłowy był już w docelowym folderze, np. akcja CopyNew, ale plik już tam był.
-                            // Wtedy oldPath i newPath wskazują na ten sam plik, który ma być w profilu docelowym.
-                            oldPathForProfileUpdate = null; // Nic nie jest usuwane z innych profili
-                            newPathForProfileUpdate = sourcePath; // Ta ścieżka ma być w profilu docelowym
+                            oldPathForProfileUpdate = null;
+                            newPathForProfileUpdate = sourcePath;
                         }
 
-
-                        // Zaktualizuj profile: usuń oldPath (jeśli jest), dodaj newPath do profilu docelowego
                         if (await HandleFileMovedOrDeletedUpdateProfilesAsync(oldPathForProfileUpdate, newPathForProfileUpdate, move.TargetCategoryProfileName, token, progress))
                         {
                             anyProfileActuallyModified = true;
                         }
                     }
                 }
-                catch (OperationCanceledException) { throw; } // Przekaż dalej
+                catch (OperationCanceledException) { throw; }
                 catch (Exception exCopy)
                 {
                     copyErrors++;
-                    SimpleFileLogger.LogError($"[HandleApproved] Błąd operacji na pliku '{sourcePath}' -> '{finalTargetPath}'. Akcja: {actionType}.", exCopy); // POPRAWKA: originalTarget -> finalTargetPath
+                    SimpleFileLogger.LogError($"[HandleApproved] Błąd operacji na pliku '{sourcePath}' -> '{finalTargetPath}'. Akcja: {actionType}.", exCopy);
                 }
             }
             token.ThrowIfCancellationRequested();
 
-            // Usuń przetworzone sugestie z głównej listy cache, jeśli trzeba
+            // Usuń gorszej jakości duplikaty z folderów Mix, które nie były częścią `approvedMoves`
+            if (graphicallyIdenticalSourceDuplicatesInMixToDelete != null && graphicallyIdenticalSourceDuplicatesInMixToDelete.Any())
+            {
+                int extraDeletedCount = 0;
+                var distinctPathsToDelete = graphicallyIdenticalSourceDuplicatesInMixToDelete.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                SimpleFileLogger.Log($"[HandleApproved] Próba usunięcia {distinctPathsToDelete.Count} dodatkowych, gorszej jakości duplikatów z folderów Mix.");
+
+                foreach (var pathToDeleteFromMix in distinctPathsToDelete)
+                {
+                    token.ThrowIfCancellationRequested();
+                    // Upewnij się, że ten plik nie był właśnie przetworzony jako część `approvedMoves` (jego oryginał już by nie istniał)
+                    // lub nie jest to ścieżka, do której właśnie coś skopiowano.
+                    // Najprościej: jeśli plik nadal istnieje w Mix, to znaczy, że nie był "najlepszym" i można go usunąć.
+                    if (File.Exists(pathToDeleteFromMix))
+                    {
+                        try
+                        {
+                            await Task.Run(() => File.Delete(pathToDeleteFromMix), token);
+                            SimpleFileLogger.Log($"[HandleApproved-ExtraDelete] Usunięto gorszy duplikat z Mix: '{pathToDeleteFromMix}'.");
+                            extraDeletedCount++;
+                        }
+                        catch (Exception exDelExtra)
+                        {
+                            SimpleFileLogger.LogError($"[HandleApproved-ExtraDelete] Błąd podczas usuwania gorszego duplikatu z Mix '{pathToDeleteFromMix}'.", exDelExtra);
+                        }
+                    }
+                }
+                if (extraDeletedCount > 0)
+                {
+                    SimpleFileLogger.LogHighLevelInfo($"[HandleApproved-ExtraDelete] Usunięto {extraDeletedCount} gorszej jakości duplikatów z folderów Mix.");
+                }
+            }
+
+
             if (processedSourcePathsForThisBatch.Any())
             {
-                lock (_lastModelSpecificSuggestions) // Synchronizacja dostępu do listy
+                lock (_lastModelSpecificSuggestions)
                 {
                     int removedCount = _lastModelSpecificSuggestions.RemoveAll(s => processedSourcePathsForThisBatch.Contains(s.SourceImage.FilePath));
                     SimpleFileLogger.Log($"[HandleApproved] Usunięto {removedCount} zastosowanych sugestii z pamięci podręcznej.");
@@ -2335,7 +2441,7 @@ namespace CosplayManager.ViewModels
             progress.Report(new ProgressReport { ProcessedItems = totalMovesToProcess, TotalItems = totalMovesToProcess, StatusMessage = $"Zakończono stosowanie {totalMovesToProcess} zmian." });
             string summaryMessage = $"Zakończono operację: {successfulMoves} udanych ruchów, {skippedQuality} pominiętych (jakość), {skippedOther} pominiętych (inne), {copyErrors} błędów kopiowania, {deleteErrors} błędów usuwania.";
             StatusMessage = summaryMessage;
-            // Pokaż podsumowanie, jeśli były jakieś błędy lub znaczące pominięcia, lub jeśli użytkownik tego oczekuje
+
             if (successfulMoves > 0 || copyErrors > 0 || deleteErrors > 0 || skippedOther > 0 || skippedQuality > 0)
             {
                 MessageBox.Show(summaryMessage, "Operacja Zastosowania Sugestii Zakończona", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2679,7 +2785,7 @@ namespace CosplayManager.ViewModels
             SimpleFileLogger.LogHighLevelInfo(StatusMessage);
         }
 
-        // Metoda do usuwania duplikatów w modelu (już istnieje w Twoim pliku, poprawiona pod kątem Interlocked)
+        // Metoda do usuwania duplikatów w modelu
         private async Task ExecuteRemoveDuplicatesInModelAsync(object? parameter, CancellationToken token, IProgress<ProgressReport> progress)
         {
             if (!(parameter is ModelDisplayViewModel modelVM)) { StatusMessage = "Błąd: Nieprawidłowy parametr. Oczekiwano ModelDisplayViewModel."; return; }
@@ -2690,10 +2796,10 @@ namespace CosplayManager.ViewModels
             { StatusMessage = "Anulowano usuwanie duplikatów."; progress.Report(new ProgressReport { ProcessedItems = 1, TotalItems = 1, StatusMessage = "Anulowano." }); return; }
 
             SimpleFileLogger.LogHighLevelInfo($"[RemoveDuplicatesInModel] Rozpoczęto usuwanie duplikatów dla modelki: {modelName}. Token: {token.GetHashCode()}");
-            long totalDuplicatesRemovedThisOperation = 0; // Użyj long
+            long totalDuplicatesRemovedThisOperation = 0;
             bool anyProfilesActuallyChanged = false;
 
-            var profilesSnapshot = modelVM.CharacterProfiles.ToList(); // Pracuj na kopii listy profili
+            var profilesSnapshot = modelVM.CharacterProfiles.ToList();
             int totalProfilesToScan = profilesSnapshot.Count;
             int profilesProcessedCount = 0;
             progress.Report(new ProgressReport { ProcessedItems = profilesProcessedCount, TotalItems = totalProfilesToScan, StatusMessage = $"Skanowanie {totalProfilesToScan} profili postaci dla '{modelName}'..." });
@@ -2704,64 +2810,101 @@ namespace CosplayManager.ViewModels
                 profilesProcessedCount++;
                 progress.Report(new ProgressReport { ProcessedItems = profilesProcessedCount, TotalItems = totalProfilesToScan, StatusMessage = $"Przetwarzanie profilu: {characterProfile.CategoryName} ({profilesProcessedCount}/{totalProfilesToScan})..." });
 
-                if (characterProfile.SourceImagePaths == null || characterProfile.SourceImagePaths.Count < 2) continue; // Potrzebujemy co najmniej 2 obrazów do porównania
+                bool hadMissingFiles = false;
+                List<string> initiallyExistingPathsForThisProfile = new List<string>();
+                if (characterProfile.SourceImagePaths != null)
+                {
+                    foreach (var pth in characterProfile.SourceImagePaths)
+                    {
+                        if (File.Exists(pth)) initiallyExistingPathsForThisProfile.Add(pth);
+                        else hadMissingFiles = true;
+                    }
+                }
+
+                if (initiallyExistingPathsForThisProfile.Count < 2 && !hadMissingFiles)
+                {
+                    SimpleFileLogger.Log($"[RDIM] Profil '{characterProfile.CategoryName}' ma mniej niż 2 istniejące obrazy i brakowało w nim plików. Pomijanie sprawdzania duplikatów.");
+                    continue;
+                }
+                if (initiallyExistingPathsForThisProfile.Count == 0 && hadMissingFiles)
+                {
+                    SimpleFileLogger.Log($"[RDIM] Profil '{characterProfile.CategoryName}' nie zawiera żadnych istniejących obrazów, ale miał zdefiniowane brakujące. Regeneracja jako pusty.");
+                    await _profileService.GenerateProfileAsync(characterProfile.CategoryName, new List<ImageFileEntry>(), progress, token);
+                    lock (_profileChangeLock) anyProfilesActuallyChanged = true;
+                    continue;
+                }
+                if (initiallyExistingPathsForThisProfile.Count < 2) // Mniej niż 2 istniejące, ale mogły być brakujące
+                {
+                    if (hadMissingFiles) // Jeśli były brakujące, zregeneruj z tym co jest
+                    {
+                        var entriesForRegen = new List<ImageFileEntry>();
+                        foreach (var path in initiallyExistingPathsForThisProfile)
+                        {
+                            var entry = await _imageMetadataService.ExtractMetadataAsync(path);
+                            if (entry != null) entriesForRegen.Add(entry);
+                        }
+                        await _profileService.GenerateProfileAsync(characterProfile.CategoryName, entriesForRegen, progress, token);
+                        lock (_profileChangeLock) anyProfilesActuallyChanged = true;
+                        SimpleFileLogger.LogHighLevelInfo($"[RDIM] Profil '{characterProfile.CategoryName}' zaktualizowany (mniej niż 2 obrazy, ale były brakujące).");
+                    }
+                    continue;
+                }
+
 
                 var entriesInProfileConcurrentBag = new ConcurrentBag<ImageFileEntry>();
-                bool hadMissingFiles = false; // Flaga, czy w profilu były brakujące pliki
-
-                // Użyj long dla Interlocked
                 long imagesMetadataLoadedCount = 0;
-                int totalImagesInThisProfile = characterProfile.SourceImagePaths.Count;
 
-                // Załaduj metadane i embeddingi dla wszystkich obrazów w profilu
-                var metadataAndEmbeddingTasks = characterProfile.SourceImagePaths.Select(imgPath => Task.Run(async () => {
+                var metadataAndEmbeddingTasks = initiallyExistingPathsForThisProfile.Select(imgPath => Task.Run(async () => {
                     token.ThrowIfCancellationRequested();
-                    if (!File.Exists(imgPath))
-                    {
-                        SimpleFileLogger.LogWarning($"[RDIM] Plik '{imgPath}' z profilu '{characterProfile.CategoryName}' nie istnieje.");
-                        lock (_profileChangeLock) hadMissingFiles = true; // Zaznacz, że były brakujące pliki
-                        Interlocked.Increment(ref imagesMetadataLoadedCount); // Zlicz jako przetworzony
-                        return; // Nie dodawaj do listy
-                    }
+                    // File.Exists już sprawdzony przy tworzeniu initiallyExistingPathsForThisProfile
                     var entry = await _imageMetadataService.ExtractMetadataAsync(imgPath);
                     if (entry != null)
                     {
-                        await _embeddingSemaphore.WaitAsync(token); // Ogranicz dostęp do serwisu embeddingów
+                        await _embeddingSemaphore.WaitAsync(token);
                         try
                         {
                             if (token.IsCancellationRequested) return;
-                            entry.FeatureVector = await _profileService.GetImageEmbeddingAsync(entry, token); // Pobierz embedding
+                            entry.FeatureVector = await _profileService.GetImageEmbeddingAsync(entry, token);
                         }
                         finally { _embeddingSemaphore.Release(); }
 
                         if (entry.FeatureVector != null) entriesInProfileConcurrentBag.Add(entry);
                         else SimpleFileLogger.LogWarning($"[RDIM] Nie udało się uzyskać embeddingu dla pliku '{entry.FilePath}'. Pomijanie w analizie duplikatów.");
                     }
-                    Interlocked.Increment(ref imagesMetadataLoadedCount); // Zlicz jako przetworzony
+                    Interlocked.Increment(ref imagesMetadataLoadedCount);
                 }, token)).ToList();
                 await Task.WhenAll(metadataAndEmbeddingTasks);
                 token.ThrowIfCancellationRequested();
 
                 var validEntriesWithEmbeddings = entriesInProfileConcurrentBag.Where(e => e.FeatureVector != null).ToList();
-                if (validEntriesWithEmbeddings.Count < 2) // Jeśli po załadowaniu embeddingów mamy mniej niż 2 obrazy
+                if (validEntriesWithEmbeddings.Count < 2)
                 {
-                    if (hadMissingFiles) // Jeśli były brakujące pliki, profil mógł się zmienić
+                    if (hadMissingFiles) // Mniej niż 2 z embeddingami, ale były brakujące
                     {
-                        // Zregeneruj profil tylko z istniejącymi plikami (bez embeddingów, bo GenerateProfileAsync je doda)
-                        var existingEntriesForRegen = characterProfile.SourceImagePaths
-                            .Where(File.Exists)
-                            .Select(p => _imageMetadataService.ExtractMetadataAsync(p).Result) // Tu można uprościć, jeśli ExtractMetadataAsync jest szybkie
-                            .Where(e => e != null)
-                            .ToList();
-                        if (existingEntriesForRegen != null) // Dodatkowe sprawdzenie nulla
-                            await _profileService.GenerateProfileAsync(characterProfile.CategoryName, existingEntriesForRegen, progress, token);
+                        var entriesForRegen = new List<ImageFileEntry>();
+                        foreach (var path in initiallyExistingPathsForThisProfile) // Użyj potwierdzonych istniejących ścieżek
+                        {
+                            // Spróbuj znaleźć wpis z embeddingiem, jeśli istnieje, lub załaduj tylko metadane
+                            var entryWithMaybeEmbedding = validEntriesWithEmbeddings.FirstOrDefault(e => e.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase));
+                            if (entryWithMaybeEmbedding != null)
+                            {
+                                entriesForRegen.Add(entryWithMaybeEmbedding); // Ma już embedding
+                            }
+                            else // Nie udało się uzyskać embeddingu lub nie był w validEntriesWithEmbeddings
+                            {
+                                var metaEntry = await _imageMetadataService.ExtractMetadataAsync(path);
+                                if (metaEntry != null) entriesForRegen.Add(metaEntry);
+                            }
+                        }
+                        await _profileService.GenerateProfileAsync(characterProfile.CategoryName, entriesForRegen, progress, token);
                         lock (_profileChangeLock) anyProfilesActuallyChanged = true;
+                        SimpleFileLogger.LogHighLevelInfo($"[RDIM] Profil '{characterProfile.CategoryName}' zaktualizowany (mniej niż 2 obrazy z embeddingami, ale były brakujące).");
                     }
-                    continue; // Przejdź do następnego profilu
+                    continue;
                 }
 
                 var filesToRemoveFromDisk = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                var processedPathsForDuplicateCheck = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // Śledź już sprawdzone ścieżki
+                var processedPathsForDuplicateCheck = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 for (int i = 0; i < validEntriesWithEmbeddings.Count; i++)
                 {
@@ -2776,8 +2919,7 @@ namespace CosplayManager.ViewModels
                         var otherImage = validEntriesWithEmbeddings[j];
                         if (filesToRemoveFromDisk.Contains(otherImage.FilePath) || processedPathsForDuplicateCheck.Contains(otherImage.FilePath)) continue;
 
-                        // Porównaj embeddingi (muszą istnieć, bo filtrowaliśmy wcześniej)
-                        if (currentImage.FeatureVector != null && otherImage.FeatureVector != null) // Dodatkowe sprawdzenie nulla
+                        if (currentImage.FeatureVector != null && otherImage.FeatureVector != null)
                         {
                             double similarity = Utils.MathUtils.CalculateCosineSimilarity(currentImage.FeatureVector, otherImage.FeatureVector);
                             if (similarity >= DUPLICATE_SIMILARITY_THRESHOLD)
@@ -2787,24 +2929,23 @@ namespace CosplayManager.ViewModels
                         }
                     }
 
-                    if (duplicateGroup.Count > 1) // Jeśli znaleziono grupę duplikatów
+                    if (duplicateGroup.Count > 1)
                     {
-                        ImageFileEntry bestImageInGroup = duplicateGroup.First(); // Załóż, że pierwszy jest najlepszy
-                        foreach (var imageInGroup in duplicateGroup.Skip(1)) // Porównaj z resztą
+                        ImageFileEntry bestImageInGroup = duplicateGroup.First();
+                        foreach (var imageInGroup in duplicateGroup.Skip(1))
                         {
                             if (IsImageBetter(imageInGroup, bestImageInGroup)) bestImageInGroup = imageInGroup;
                         }
-                        // Dodaj wszystkie oprócz najlepszego do listy do usunięcia
                         foreach (var imageInGroup in duplicateGroup)
                         {
                             if (!imageInGroup.FilePath.Equals(bestImageInGroup.FilePath, StringComparison.OrdinalIgnoreCase))
                             {
                                 filesToRemoveFromDisk.Add(imageInGroup.FilePath);
                             }
-                            processedPathsForDuplicateCheck.Add(imageInGroup.FilePath); // Oznacz wszystkie w grupie jako przetworzone
+                            processedPathsForDuplicateCheck.Add(imageInGroup.FilePath);
                         }
                     }
-                    else // Jeśli nie było duplikatów dla currentImage
+                    else
                     {
                         processedPathsForDuplicateCheck.Add(currentImage.FilePath);
                     }
@@ -2828,26 +2969,44 @@ namespace CosplayManager.ViewModels
                         }
                         catch (Exception ex) { SimpleFileLogger.LogError($"[RDIM] Błąd podczas usuwania duplikatu '{pathToRemove}'.", ex); }
                     }
-                    // Zregeneruj profil tylko z pozostałymi (najlepszymi) plikami
-                    var keptEntries = validEntriesWithEmbeddings
-                        .Where(e => !filesToRemoveFromDisk.Contains(e.FilePath) && File.Exists(e.FilePath)) // Upewnij się, że plik nadal istnieje
-                        .ToList();
+
+                    var keptEntries = new List<ImageFileEntry>();
+                    foreach (var path in initiallyExistingPathsForThisProfile) // Bierzemy z listy istniejących na początku
+                    {
+                        if (!filesToRemoveFromDisk.Contains(path) && File.Exists(path)) // Jeśli nie jest na liście do usunięcia I nadal istnieje
+                        {
+                            var entry = validEntriesWithEmbeddings.FirstOrDefault(e => e.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase))
+                                       ?? await _imageMetadataService.ExtractMetadataAsync(path); // Załaduj metadane jeśli nie ma w valid (bo np. nie miał embeddingu)
+                            if (entry != null) keptEntries.Add(entry);
+                        }
+                    }
+
                     await _profileService.GenerateProfileAsync(characterProfile.CategoryName, keptEntries, progress, token);
                     lock (_profileChangeLock) anyProfilesActuallyChanged = true;
                     SimpleFileLogger.LogHighLevelInfo($"[RDIM] Profil '{characterProfile.CategoryName}' zaktualizowany. Usunięto {duplicatesRemovedThisProfile} duplikatów z dysku.");
                 }
-                else if (hadMissingFiles) // Jeśli nie było duplikatów do usunięcia, ale były brakujące pliki
+                else if (hadMissingFiles)
                 {
-                    var existingEntriesForRegen = characterProfile.SourceImagePaths
-                       .Where(File.Exists)
-                       .Select(p => _imageMetadataService.ExtractMetadataAsync(p).Result)
-                       .Where(e => e != null)
-                       .ToList();
-                    if (existingEntriesForRegen != null) // Dodatkowe sprawdzenie nulla
-                        await _profileService.GenerateProfileAsync(characterProfile.CategoryName, existingEntriesForRegen, progress, token);
+                    var entriesForRegen = new List<ImageFileEntry>();
+                    foreach (var path in initiallyExistingPathsForThisProfile)
+                    {
+                        // Podobnie jak wyżej, spróbuj znaleźć wpis z embeddingiem lub załaduj metadane
+                        var entryWithMaybeEmbedding = validEntriesWithEmbeddings.FirstOrDefault(e => e.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase));
+                        if (entryWithMaybeEmbedding != null)
+                        {
+                            entriesForRegen.Add(entryWithMaybeEmbedding);
+                        }
+                        else
+                        {
+                            var metaEntry = await _imageMetadataService.ExtractMetadataAsync(path);
+                            if (metaEntry != null) entriesForRegen.Add(metaEntry);
+                        }
+                    }
+                    await _profileService.GenerateProfileAsync(characterProfile.CategoryName, entriesForRegen, progress, token);
                     lock (_profileChangeLock) anyProfilesActuallyChanged = true;
+                    SimpleFileLogger.LogHighLevelInfo($"[RDIM] Profil '{characterProfile.CategoryName}' zaktualizowany (usunięto nieistniejące ścieżki, bez usuwania duplikatów).");
                 }
-            } // Koniec pętli po profilach postaci
+            }
 
             token.ThrowIfCancellationRequested();
             progress.Report(new ProgressReport { ProcessedItems = totalProfilesToScan, TotalItems = totalProfilesToScan, StatusMessage = $"Zakończono usuwanie duplikatów dla modelki '{modelName}'." });
@@ -2857,7 +3016,7 @@ namespace CosplayManager.ViewModels
             {
                 StatusMessage = $"Zakończono usuwanie duplikatów dla '{modelName}'. Usunięto: {finalTotalDuplicatesRemoved} plików. Odświeżanie listy profili...";
                 _isRefreshingProfilesPostMove = true;
-                await InternalExecuteLoadProfilesAsync(token, progress); // Odśwież listę profili
+                await InternalExecuteLoadProfilesAsync(token, progress);
                 _isRefreshingProfilesPostMove = false;
                 MessageBox.Show($"Usunięto {finalTotalDuplicatesRemoved} duplikatów obrazów dla modelki '{modelName}'.", "Usuwanie Duplikatów Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
             }
@@ -2868,14 +3027,13 @@ namespace CosplayManager.ViewModels
             }
         }
 
-        // Metoda do automatycznego stosowania wszystkich dopasowań dla modelki (już istnieje w Twoim pliku)
+        // Metoda do automatycznego stosowania wszystkich dopasowań dla modelki
         private async Task ExecuteApplyAllMatchesForModelAsync(object? parameter, CancellationToken token, IProgress<ProgressReport> progress)
         {
             if (!(parameter is ModelDisplayViewModel modelVM)) { StatusMessage = "Błąd: Nieprawidłowy parametr. Oczekiwano ModelDisplayViewModel."; MessageBox.Show(StatusMessage, "Błąd Wyboru", MessageBoxButton.OK, MessageBoxImage.Error); return; }
             string modelName = modelVM.ModelName;
             progress.Report(new ProgressReport { OperationName = $"Stosowanie Wszystkich Dopasowań dla '{modelName}'", StatusMessage = $"Sprawdzanie dostępnych sugestii...", IsIndeterminate = true });
 
-            // Sprawdź, czy cache sugestii dotyczy tej modelki LUB jest globalny
             bool hasRelevantCache = (_lastScannedModelNameForSuggestions == modelVM.ModelName || string.IsNullOrEmpty(_lastScannedModelNameForSuggestions)) &&
                                   _lastModelSpecificSuggestions.Any();
 
@@ -2887,7 +3045,6 @@ namespace CosplayManager.ViewModels
                 return;
             }
 
-            // Filtruj sugestie, które dotyczą tej modelki i spełniają próg
             var movesToApply = _lastModelSpecificSuggestions
                 .Where(m => _profileService.GetModelNameFromCategory(m.TargetCategoryProfileName) == modelName &&
                             m.Similarity >= SuggestionSimilarityThreshold)
@@ -2898,7 +3055,6 @@ namespace CosplayManager.ViewModels
                 StatusMessage = $"Brak sugestii spełniających próg podobieństwa ({SuggestionSimilarityThreshold:P0}) dla modelki '{modelName}'.";
                 MessageBox.Show(StatusMessage, "Brak Odpowiednich Sugestii", MessageBoxButton.OK, MessageBoxImage.Exclamation);
                 progress.Report(new ProgressReport { ProcessedItems = 1, TotalItems = 1, StatusMessage = "Brak sugestii spełniających próg." });
-                // Zaktualizuj liczniki w UI, jeśli były jakieś sugestie poniżej progu
                 RefreshPendingSuggestionCountsFromCache();
                 return;
             }
@@ -2908,26 +3064,50 @@ namespace CosplayManager.ViewModels
                 StatusMessage = "Anulowano automatyczne stosowanie dopasowań.";
                 progress.Report(new ProgressReport { ProcessedItems = 1, TotalItems = 1, StatusMessage = "Anulowano." });
                 return;
-            } 
+            }
 
             SimpleFileLogger.LogHighLevelInfo($"[ApplyAllMatchesForModel] Rozpoczęto automatyczne stosowanie {movesToApply.Count} dopasowań dla modelki: {modelName}. Token: {token.GetHashCode()}");
 
-            // InternalHandleApprovedMovesAsync będzie raportować swój własny postęp
-            bool anyProfileDataActuallyChanged = await InternalHandleApprovedMovesAsync(new List<Models.ProposedMove>(movesToApply), modelVM, null, token, progress); // Przekaż progress
+            // Zbierz listę gorszych duplikatów ZANIM `_lastModelSpecificSuggestions` zostanie zmodyfikowane przez `InternalHandleApprovedMovesAsync`
+            // Musimy odtworzyć logikę filtrowania, aby wiedzieć, które pliki z Mix były gorszymi duplikatami tych, które są w `movesToApply`
+            // To jest trudne, bo `FilterRawProposedMoves` działa na "surowych" danych.
+            // Prostsze: `duplicateSourceFilesFromMixToDelete` powinno być przechowywane jako pole klasy,
+            // jeśli zostało wygenerowane przez `ExecuteMatchModelSpecificAsync` lub `ExecuteSuggestImagesAsync`
+            // które dotyczyło `modelVM.ModelName` lub było globalne.
+
+            List<string> relevantDuplicateSourceFilesFromMixToDelete = new List<string>();
+            if ((string.IsNullOrEmpty(_lastScannedModelNameForSuggestions) || // Globalny skan
+                _lastScannedModelNameForSuggestions == modelName) && // Skan dla tej konkretnej modelki
+                _lastModelSpecificSuggestions.Any()) // I są jakieś sugestie w cache
+            {
+                // Potrzebujemy oryginalnej listy `rawProposedMoves`, z której powstało `_lastModelSpecificSuggestions`
+                // oraz `duplicateSourceFilesFromMixToDelete`. Na razie zakładamy, że jeśli `_lastModelSpecificSuggestions`
+                // jest dla tej modelki, to `duplicateSourceFilesFromMixToDelete` (z poprzedniego skanu) jest również relewantne.
+                // To wymagałoby przechowania `duplicateSourceFilesFromMixToDelete` gdzieś, np. obok `_lastModelSpecificSuggestions`.
+
+                // Na potrzeby tego wywołania, jeśli nie mamy bezpośredniego dostępu do listy duplikatów
+                // z poprzedniego skanu, musimy pominąć ten krok lub przemyśleć architekturę cache.
+                // Dla uproszczenia, na razie przekażemy pustą listę.
+                // Idealnie: `(var uniqueMoves, var duplicatesToDelete) = FilterRawProposedMoves(WSZYSTKIE_SUROWE_SUGESTIE_DLA_TEGO_MODELU_Z_MIX);`
+                // i `movesToApply` byłyby tymi `uniqueMoves`. Wtedy `duplicatesToDelete` byłoby poprawne.
+            }
+
+
+            bool anyProfileDataActuallyChanged = await InternalHandleApprovedMovesAsync(new List<Models.ProposedMove>(movesToApply), modelVM, null, relevantDuplicateSourceFilesFromMixToDelete, token, progress);
             token.ThrowIfCancellationRequested();
 
             if (anyProfileDataActuallyChanged)
             {
                 StatusMessage = $"Zakończono automatyczne stosowanie dopasowań dla '{modelName}'. Odświeżanie listy profili...";
                 _isRefreshingProfilesPostMove = true;
-                await InternalExecuteLoadProfilesAsync(token, progress); // Odśwież listę profili
+                await InternalExecuteLoadProfilesAsync(token, progress);
                 _isRefreshingProfilesPostMove = false;
             }
             else
             {
-                StatusMessage = $"Zakończono automatyczne stosowanie dopasowań dla '{modelName}'. Brak istotnych zmian w definicjach profili (mogły być np. tylko usunięcia z Mix).";
+                StatusMessage = $"Zakończono automatyczne stosowanie dopasowań dla '{modelName}'. Brak istotnych zmian w definicjach profili.";
             }
-            RefreshPendingSuggestionCountsFromCache(); // Odśwież liczniki w UI
+            RefreshPendingSuggestionCountsFromCache();
             MessageBox.Show($"Zastosowano {movesToApply.Count} dopasowań dla modelki '{modelName}'.", "Automatyczne Stosowanie Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
