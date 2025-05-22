@@ -20,7 +20,7 @@ namespace CosplayManager.Services
         private readonly EmbeddingCacheServiceSQLite _embeddingCacheService;
         private readonly string _profilesBaseFolderPath;
 
-        private const int MAX_CONCURRENT_BATCH_REQUESTS = 4;
+        private const int MAX_CONCURRENT_BATCH_REQUESTS = 2;
         private const int EMBEDDING_BATCH_SIZE = 32;
 
         private readonly ConcurrentDictionary<string, object> _modelFileLocks = new ConcurrentDictionary<string, object>(StringComparer.OrdinalIgnoreCase);

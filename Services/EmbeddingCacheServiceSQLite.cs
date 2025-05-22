@@ -46,6 +46,23 @@ namespace CosplayManager.Services
                 using (var connection = new SqliteConnection($"Data Source={_databasePath}"))
                 {
                     connection.Open();
+
+                    // WŁĄCZANIE TRYBU WAL (Write-Ahead Logging)
+                    using (var walCommand = connection.CreateCommand())
+                    {
+                        walCommand.CommandText = "PRAGMA journal_mode=WAL;";
+                        try
+                        {
+                            walCommand.ExecuteNonQuery();
+                            SimpleFileLogger.Log("EmbeddingCacheServiceSQLite: Successfully set journal_mode to WAL.");
+                        }
+                        catch (Exception ex)
+                        {
+                            SimpleFileLogger.LogError("EmbeddingCacheServiceSQLite: Failed to set journal_mode to WAL.", ex);
+                        }
+                    }
+                    // KONIEC ZMIANY - WŁĄCZANIE TRYBU WAL
+
                     string createTableQuery = $@"
                         CREATE TABLE IF NOT EXISTS {TableName} (
                             ImagePath TEXT PRIMARY KEY,

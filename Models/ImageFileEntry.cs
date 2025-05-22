@@ -1,10 +1,14 @@
 using CosplayManager.Services;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
+using SixLabors.ImageSharp.Processing;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media.Imaging;
 
@@ -120,6 +124,9 @@ namespace CosplayManager.Models
             private set => SetProperty(ref _isLoadingThumbnail, value);
         }
 
+        // Globalny semafor do ograniczania liczby równoczesnych operacji ładowania miniaturek
+        private static readonly SemaphoreSlim _thumbnailGlobalSemaphore = new SemaphoreSlim(5, 5); // Można dostosować limit (np. 5)
+
         public async Task<BitmapImage?> LoadThumbnailAsync(int decodePixelWidth = 150)
         {
             if (this.Thumbnail != null && !string.IsNullOrWhiteSpace(FilePath) && File.Exists(FilePath))
@@ -135,7 +142,7 @@ namespace CosplayManager.Models
                 }
                 if (this.Thumbnail != null)
                 {
-                    this.Thumbnail = null;
+                    this.Thumbnail = null; // Wyczyść istniejącą (już nieaktualną) miniaturkę
                 }
                 return null;
             }
@@ -143,54 +150,87 @@ namespace CosplayManager.Models
             if (IsLoadingThumbnail)
             {
                 SimpleFileLogger.Log($"ImageFileEntry.LoadThumbnailAsync: Już w trakcie ładowania dla '{FilePath}'.");
-                return this.Thumbnail;
+                return this.Thumbnail; // Zwraca aktualną miniaturkę, która może być null, jeśli ładowanie jeszcze trwa
             }
 
             IsLoadingThumbnail = true;
-            BitmapImage? loadedThumbnail = null;
+            BitmapImage? finalBitmapImage = null;
+
+            await _thumbnailGlobalSemaphore.WaitAsync(); // Czekaj na globalny semafor
             try
             {
-                loadedThumbnail = await Task.Run(() =>
+                byte[]? imageBytes = await Task.Run(() =>
                 {
                     try
                     {
-                        if (!File.Exists(FilePath))
+                        if (!File.Exists(FilePath)) // Podwójne sprawdzenie wewnątrz Task.Run
                         {
-                            SimpleFileLogger.LogWarning($"ImageFileEntry.LoadThumbnailAsync (Task.Run): Plik nie znaleziony '{FilePath}' przed utworzeniem BitmapImage.");
+                            SimpleFileLogger.LogWarning($"ImageFileEntry.LoadThumbnailAsync (Task.Run ImageSharp): Plik nie znaleziony '{FilePath}'.");
                             return null;
                         }
 
-                        BitmapImage bmp = new BitmapImage();
-                        bmp.BeginInit();
-                        bmp.UriSource = new Uri(FilePath);
-                        bmp.CacheOption = BitmapCacheOption.OnLoad;
-                        bmp.DecodePixelWidth = decodePixelWidth;
-                        bmp.EndInit();
-                        bmp.Freeze();
-                        return bmp;
+                        using (var image = SixLabors.ImageSharp.Image.Load(FilePath)) // Automatyczne wykrywanie formatu przez ImageSharp
+                        {
+                            var newWidth = decodePixelWidth;
+                            var newHeight = 0;
+                            if (image.Height > image.Width) // Obraz portretowy
+                            {
+                                newWidth = 0;
+                                newHeight = decodePixelWidth;
+                            }
+
+                            image.Mutate(x => x.Resize(new ResizeOptions
+                            {
+                                Size = new SixLabors.ImageSharp.Size(newWidth, newHeight),
+                                Mode = ResizeMode.Max, // Zachowaj proporcje, dopasuj do maksymalnych wymiarów
+                                Sampler = KnownResamplers.Lanczos3 // Dobra jakość próbkowania
+                            }));
+
+                            using (var ms = new MemoryStream())
+                            {
+                                image.SaveAsBmp(ms); // Zapisz jako BMP do strumienia pamięci (szybkie dla BitmapImage)
+                                ms.Position = 0;
+                                return ms.ToArray();
+                            }
+                        }
                     }
-                    catch (FileNotFoundException)
+                    catch (SixLabors.ImageSharp.UnknownImageFormatException uifEx)
                     {
-                        SimpleFileLogger.LogWarning($"ImageFileEntry.LoadThumbnailAsync (Task.Run): FileNotFoundException dla '{FilePath}'.");
+                        SimpleFileLogger.LogError($"ImageFileEntry.LoadThumbnailAsync (Task.Run ImageSharp): UnknownImageFormatException dla {FilePath}. Plik może być uszkodzony lub format nie jest obsługiwany przez ImageSharp.", uifEx);
                         return null;
                     }
                     catch (Exception ex)
                     {
-                        SimpleFileLogger.LogError($"Błąd tworzenia miniatury dla {FilePath} w Task.Run", ex);
+                        SimpleFileLogger.LogError($"Błąd tworzenia miniatury (ImageSharp) dla {FilePath} w Task.Run", ex);
                         return null;
                     }
                 });
 
-                this.Thumbnail = loadedThumbnail;
+                if (imageBytes != null && imageBytes.Length > 0)
+                {
+                    var bmp = new BitmapImage();
+                    bmp.BeginInit();
+                    bmp.CacheOption = BitmapCacheOption.OnLoad; // Załaduj od razu
+                    bmp.StreamSource = new MemoryStream(imageBytes);
+                    // bmp.DecodePixelWidth = decodePixelWidth; // Już przeskalowane przez ImageSharp, ale można zostawić jako wskazówkę
+                    bmp.EndInit();
+                    bmp.Freeze(); // Niezbędne do użycia w innym wątku (UI)
+                    finalBitmapImage = bmp;
+                }
+
+                // Ustawienie właściwości Thumbnail (co wywoła OnPropertyChanged i zaktualizuje UI)
+                // musi nastąpić po całkowitym utworzeniu i zamrożeniu obiektu BitmapImage.
+                this.Thumbnail = finalBitmapImage;
             }
-            catch (Exception ex)
+            catch (Exception ex) // Ogólny wyjątek dla całego bloku try semafora
             {
-                SimpleFileLogger.LogError($"Zewnętrzny błąd podczas operacji ładowania miniatury dla {FilePath}", ex);
-                this.Thumbnail = null;
+                SimpleFileLogger.LogError($"Zewnętrzny błąd podczas operacji ładowania miniatury (ImageSharp flow) dla {FilePath}", ex);
+                this.Thumbnail = null; // W przypadku błędu, ustaw miniaturkę na null
             }
             finally
             {
-                IsLoadingThumbnail = false;
+                _thumbnailGlobalSemaphore.Release(); // Zwolnij globalny semafor
+                IsLoadingThumbnail = false; // Zaktualizuj flagę, nawet jeśli wystąpił błąd
             }
             return this.Thumbnail;
         }
