@@ -1287,7 +1287,8 @@ namespace CosplayManager.ViewModels
                 // Uruchom przetwarzanie każdego folderu modelki jako osobne zadanie
                 modelProcessingTasks.Add(Task.Run(async () =>
                 {
-                    var result = await InternalProcessDirectoryForProfileCreationAsync(modelDir, currentModelName, new List<string>(), mixedFoldersToIgnore, modelSpecificProgress, token);
+                    // MODYFIKACJA: Przekazanie initialIsInIgnoredPathBranch = false
+                    var result = await InternalProcessDirectoryForProfileCreationAsync(modelDir, currentModelName, new List<string>(), mixedFoldersToIgnore, false, modelSpecificProgress, token);
                     Interlocked.Increment(ref modelsProcessedCount); // Zwiększ licznik po zakończeniu przetwarzania modelu
                     // Aktualizuj główny pasek postępu po zakończeniu modelu
                     progress.Report(new ProgressReport { ProcessedItems = (int)Interlocked.Read(ref modelsProcessedCount), TotalItems = totalModelsToProcess, StatusMessage = $"Model '{currentModelName}' zakończony." });
@@ -1313,11 +1314,13 @@ namespace CosplayManager.ViewModels
             MessageBox.Show(StatusMessage, "Skanowanie Zakończone", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
+        // MODYFIKACJA: Dodano parametr bool isInIgnoredPathBranch
         private async Task<(int profilesChanged, bool anyDataChanged)> InternalProcessDirectoryForProfileCreationAsync(
             string currentDirectoryPath,
             string modelNameForProfile, // Nazwa modelki (górny folder)
             List<string> parentCharacterPathParts, // Ścieżka do postaci budowana rekurencyjnie
             HashSet<string> mixedFoldersToIgnore, // Foldery "Mix" do ignorowania
+            bool isInIgnoredPathBranch, // NOWY PARAMETR: Czy jesteśmy w gałęzi folderu ignorowanego
             IProgress<ProgressReport> progress, // Do raportowania postępu dla tego konkretnego zadania
             CancellationToken token)
         {
@@ -1326,29 +1329,27 @@ namespace CosplayManager.ViewModels
             bool anyDataChangedThisCall = false;
             string currentSegmentName = Path.GetFileName(currentDirectoryPath); // Nazwa bieżącego segmentu (folderu)
 
+            // MODYFIKACJA: Oblicz, czy bieżący segment lub którykolwiek z rodziców był ignorowany
+            bool newIsInIgnoredPathBranch = isInIgnoredPathBranch || mixedFoldersToIgnore.Contains(currentSegmentName);
+
             progress.Report(new ProgressReport { OperationName = $"Model '{modelNameForProfile}'", StatusMessage = $"Analiza folderu: {currentSegmentName}", IsIndeterminate = true });
 
             var currentCharacterPathSegments = new List<string>(parentCharacterPathParts);
             string modelRootForCurrentModel = Path.Combine(LibraryRootPath, modelNameForProfile); // Pełna ścieżka do głównego folderu modelki
             bool isAtModelRootLevel = currentDirectoryPath.Equals(modelRootForCurrentModel, StringComparison.OrdinalIgnoreCase);
 
-            // Dodaj bieżący segment do ścieżki postaci, jeśli nie jesteśmy w głównym folderze modelki
-            // i jeśli bieżący folder nie jest folderem "Mix"
-            if (!isAtModelRootLevel && !mixedFoldersToIgnore.Contains(currentSegmentName))
+            if (!isAtModelRootLevel && !mixedFoldersToIgnore.Contains(currentSegmentName)) // Nie dodawaj segmentu "Mix" do nazwy postaci
             {
                 currentCharacterPathSegments.Add(currentSegmentName);
             }
 
-            // Zbuduj pełną nazwę postaci (np. "Outfit1 - RedDress")
             string characterFullName = string.Join(" - ", currentCharacterPathSegments);
-            // Zbuduj pełną nazwę kategorii profilu (np. "ModelName - Outfit1 - RedDress")
             string categoryName = string.IsNullOrWhiteSpace(characterFullName)
-                ? $"{modelNameForProfile} - General" // Jeśli brak segmentów postaci, to profil "General" dla modelki
+                ? $"{modelNameForProfile} - General"
                 : $"{modelNameForProfile} - {characterFullName}";
 
-            SimpleFileLogger.Log($"InternalProcessDir: Przetwarzanie folderu '{currentDirectoryPath}'. Model: '{modelNameForProfile}', Segmenty postaci: '{characterFullName}', Wynikowa kategoria: '{categoryName}'.");
+            SimpleFileLogger.Log($"InternalProcessDir: Przetwarzanie folderu '{currentDirectoryPath}'. Model: '{modelNameForProfile}', Segmenty postaci: '{characterFullName}', Wynikowa kategoria: '{categoryName}', IsInIgnoredBranch: {newIsInIgnoredPathBranch}.");
 
-            // Pobierz pliki obrazów tylko z bieżącego folderu (bez podfolderów)
             List<string> imagePathsInThisExactDirectory = new List<string>();
             try
             {
@@ -1359,33 +1360,28 @@ namespace CosplayManager.ViewModels
             catch (Exception ex)
             {
                 SimpleFileLogger.LogWarning($"InternalProcessDir: Błąd odczytu plików z '{currentDirectoryPath}': {ex.Message}");
-                // Kontynuuj, aby przetworzyć podfoldery
             }
             token.ThrowIfCancellationRequested();
 
-            // Ustal, czy dla tego folderu (na podstawie ścieżki postaci) powinien być generowany profil
             bool shouldProcessImagesForProfile = false;
-            if (!string.IsNullOrWhiteSpace(characterFullName)) // Jeśli mamy nazwę postaci (czyli nie jesteśmy w głównym folderze modelki, który sam w sobie jest ignorowany)
+            if (!string.IsNullOrWhiteSpace(characterFullName))
             {
                 shouldProcessImagesForProfile = true;
             }
-            // Jeśli jesteśmy w głównym folderze modelki (np. "ModelName/") i zawiera on obrazy,
-            // te obrazy utworzą profil "ModelName - General".
             else if (isAtModelRootLevel)
             {
-                // characterFullName będzie pusty, więc categoryName będzie "ModelName - General"
                 shouldProcessImagesForProfile = true;
             }
 
-
-            if (shouldProcessImagesForProfile && imagePathsInThisExactDirectory.Any())
+            // MODYFIKACJA: Dodano warunek '!newIsInIgnoredPathBranch'
+            if (shouldProcessImagesForProfile && !newIsInIgnoredPathBranch && imagePathsInThisExactDirectory.Any())
             {
                 SimpleFileLogger.Log($"InternalProcessDir: Przetwarzanie {imagePathsInThisExactDirectory.Count} obrazów z folderu '{currentDirectoryPath}' dla kategorii '{categoryName}'.");
                 progress.Report(new ProgressReport { ProcessedItems = 0, TotalItems = imagePathsInThisExactDirectory.Count, StatusMessage = $"Folder '{currentSegmentName}': Przetwarzanie {imagePathsInThisExactDirectory.Count} obrazów dla profilu '{categoryName}'..." });
 
-                var entriesForProfile = new ConcurrentBag<ImageFileEntry>(); // Bezpieczne dla wątków
+                var entriesForProfile = new ConcurrentBag<ImageFileEntry>();
                 var metadataTasks = new List<Task>();
-                long imagesProcessedForMetaLong = 0; // Użyj long dla Interlocked
+                long imagesProcessedForMetaLong = 0;
 
                 foreach (var path in imagePathsInThisExactDirectory)
                 {
@@ -1394,11 +1390,11 @@ namespace CosplayManager.ViewModels
                         token.ThrowIfCancellationRequested();
                         var entry = await _imageMetadataService.ExtractMetadataAsync(path);
                         if (entry != null) entriesForProfile.Add(entry);
-                        Interlocked.Increment(ref imagesProcessedForMetaLong); // Używaj Interlocked dla zmiennych współdzielonych między zadaniami
+                        Interlocked.Increment(ref imagesProcessedForMetaLong);
                         progress.Report(new ProgressReport { ProcessedItems = (int)Interlocked.Read(ref imagesProcessedForMetaLong), TotalItems = imagePathsInThisExactDirectory.Count, StatusMessage = $"Metadane: {Path.GetFileName(path)}..." });
                     }, token));
                 }
-                await Task.WhenAll(metadataTasks); // Poczekaj na załadowanie wszystkich metadanych
+                await Task.WhenAll(metadataTasks);
                 token.ThrowIfCancellationRequested();
 
                 if (entriesForProfile.Any())
@@ -1409,25 +1405,32 @@ namespace CosplayManager.ViewModels
                     SimpleFileLogger.Log($"InternalProcessDir: Profil '{categoryName}' utworzony/zaktualizowany z {entriesForProfile.Count} obrazami z folderu '{currentDirectoryPath}'.");
                 }
             }
-            else if (shouldProcessImagesForProfile && !imagePathsInThisExactDirectory.Any()) // Jeśli powinien być profil, ale folder jest pusty
+            // MODYFIKACJA: Logowanie pominięcia z powodu bycia w ignorowanej gałęzi
+            else if (shouldProcessImagesForProfile && newIsInIgnoredPathBranch && imagePathsInThisExactDirectory.Any())
             {
-                // Jeśli profil już istnieje (np. z poprzedniego skanowania), a folder jest teraz pusty,
-                // zaktualizuj profil na pusty, aby usunąć stare ścieżki.
-                if (_profileService.GetProfile(categoryName) != null && !mixedFoldersToIgnore.Contains(currentSegmentName)) // Nie rób tego dla folderów Mix
+                SimpleFileLogger.Log($"InternalProcessDir: Pominięto generowanie profilu dla kategorii '{categoryName}' z katalogu '{currentDirectoryPath}', ponieważ znajduje się on w ignorowanej gałęzi folderów (np. wewnątrz folderu 'Mix').");
+            }
+            else if (shouldProcessImagesForProfile && !imagePathsInThisExactDirectory.Any())
+            {
+                // MODYFIKACJA: Również tutaj sprawdź '!newIsInIgnoredPathBranch' przed czyszczeniem profilu
+                if (_profileService.GetProfile(categoryName) != null && !newIsInIgnoredPathBranch)
                 {
-                    SimpleFileLogger.Log($"InternalProcessDir: Folder '{currentDirectoryPath}' dla kategorii '{categoryName}' jest pusty. Aktualizacja/czyszczenie istniejącego profilu.");
-                    await _profileService.GenerateProfileAsync(categoryName, new List<ImageFileEntry>(), progress, token); // Generuj z pustą listą
-                    profilesGeneratedOrUpdatedThisCall++; // Liczymy to jako zmianę
+                    SimpleFileLogger.Log($"InternalProcessDir: Folder '{currentDirectoryPath}' dla kategorii '{categoryName}' jest pusty. Aktualizacja/czyszczenie istniejącego profilu (nie w ignorowanej gałęzi).");
+                    await _profileService.GenerateProfileAsync(categoryName, new List<ImageFileEntry>(), progress, token);
+                    profilesGeneratedOrUpdatedThisCall++;
                     anyDataChangedThisCall = true;
+                }
+                else if (newIsInIgnoredPathBranch)
+                {
+                    SimpleFileLogger.Log($"InternalProcessDir: Folder '{currentDirectoryPath}' dla kategorii '{categoryName}' jest pusty, ale znajduje się w ignorowanej gałęzi. Profil nie będzie czyszczony/tworzony.");
                 }
             }
             else if (!shouldProcessImagesForProfile)
             {
-                SimpleFileLogger.Log($"InternalProcessDir: Pomijanie tworzenia profilu z obrazów w '{currentDirectoryPath}', ponieważ jest to folder ignorowany (np. Mix) niebędący głównym folderem modelki.");
+                SimpleFileLogger.Log($"InternalProcessDir: Pomijanie tworzenia profilu z obrazów w '{currentDirectoryPath}', np. główny folder modelki jest traktowany inaczej lub characterFullName jest pusty bez bycia rootem.");
             }
 
 
-            // Rekurencyjne przetwarzanie podfolderów
             token.ThrowIfCancellationRequested();
             try
             {
@@ -1436,18 +1439,17 @@ namespace CosplayManager.ViewModels
                 foreach (var subDirectoryPath in subDirectories)
                 {
                     token.ThrowIfCancellationRequested();
-                    // Przekaż dalej zbudowaną ścieżkę postaci
-                    subDirProcessingTasks.Add(InternalProcessDirectoryForProfileCreationAsync(subDirectoryPath, modelNameForProfile, new List<string>(currentCharacterPathSegments), mixedFoldersToIgnore, progress, token));
+                    // MODYFIKACJA: Przekazanie 'newIsInIgnoredPathBranch' do wywołań rekurencyjnych
+                    subDirProcessingTasks.Add(InternalProcessDirectoryForProfileCreationAsync(subDirectoryPath, modelNameForProfile, new List<string>(currentCharacterPathSegments), mixedFoldersToIgnore, newIsInIgnoredPathBranch, progress, token));
                 }
                 var subDirResults = await Task.WhenAll(subDirProcessingTasks);
                 profilesGeneratedOrUpdatedThisCall += subDirResults.Sum(r => r.Item1);
                 if (subDirResults.Any(r => r.Item2)) anyDataChangedThisCall = true;
             }
-            catch (OperationCanceledException) { throw; } // Przekaż dalej wyjątek anulowania
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 SimpleFileLogger.LogError($"InternalProcessDir: Błąd przetwarzania podfolderów dla '{currentDirectoryPath}'", ex);
-                // Można rozważyć, czy błąd w jednym podfolderze powinien zatrzymać całą operację
             }
 
             return (profilesGeneratedOrUpdatedThisCall, anyDataChangedThisCall);
