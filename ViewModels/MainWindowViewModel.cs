@@ -3088,7 +3088,7 @@ namespace CosplayManager.ViewModels
                 // To wymagałoby przechowania `duplicateSourceFilesFromMixToDelete` gdzieś, np. obok `_lastModelSpecificSuggestions`.
 
                 // Na potrzeby tego wywołania, jeśli nie mamy bezpośredniego dostępu do listy duplikatów
-                // z poprzedniego skanu, musimy pominąć ten krok lub przemyśleć architekturę cache.
+                // z poprzedniego skanu, musimy pominąć ten krok lub przemyśleć architekturę cache. 
                 // Dla uproszczenia, na razie przekażemy pustą listę.
                 // Idealnie: `(var uniqueMoves, var duplicatesToDelete) = FilterRawProposedMoves(WSZYSTKIE_SUROWE_SUGESTIE_DLA_TEGO_MODELU_Z_MIX);`
                 // i `movesToApply` byłyby tymi `uniqueMoves`. Wtedy `duplicatesToDelete` byłoby poprawne.
