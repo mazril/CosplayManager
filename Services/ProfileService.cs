@@ -115,15 +115,19 @@ namespace CosplayManager.Services
 
             if (!validImageFileEntries.Any())
             {
-                SimpleFileLogger.Log($"GenerateProfileAsync: Brak prawidłowych obrazów dla '{categoryName}'. Próba usunięcia/wyczyszczenia profilu.");
-                CategoryProfile? existingProfileToClear = GetProfile(categoryName);
-                if (existingProfileToClear != null)
+                SimpleFileLogger.Log($"GenerateProfileAsync: Brak prawidłowych obrazów dla '{categoryName}'. Próba usunięcia/wyczyszczenia profilu w pamięci.");
+                CategoryProfile? existingProfileToClear;
+                lock (_profiles)
                 {
-                    lock (_profiles) { _profiles.Remove(existingProfileToClear); }
-                    SimpleFileLogger.Log($"GenerateProfileAsync: Usunięto profil '{categoryName}' z pamięci.");
-                    await SaveProfilesForModelAsync(modelName, cancellationToken);
+                    existingProfileToClear = GetProfile(categoryName);
+                    if (existingProfileToClear != null)
+                    {
+                        _profiles.Remove(existingProfileToClear);
+                        SimpleFileLogger.Log($"GenerateProfileAsync: Usunięto profil '{categoryName}' z pamięci.");
+                    }
                 }
-                progress.Report(new ProgressReport { ProcessedItems = 0, TotalItems = 0, StatusMessage = $"Brak obrazów dla '{categoryName}', profil wyczyszczony/usunięty." });
+                // Usunięto automatyczny zapis: await SaveProfilesForModelAsync(modelName, cancellationToken);
+                progress.Report(new ProgressReport { ProcessedItems = 0, TotalItems = 0, StatusMessage = $"Brak obrazów dla '{categoryName}', profil wyczyszczony/usunięty z pamięci." });
                 return;
             }
 
@@ -231,15 +235,24 @@ namespace CosplayManager.Services
             foreach (var entry in validImageFileEntries) { if (embeddingsWithPaths.TryGetValue(entry.FilePath, out var emb)) { finalEmbeddingsForProfile.Add(emb); finalPathsForProfile.Add(entry.FilePath); } }
 
             CategoryProfile? profile;
-            lock (_profiles) { profile = GetProfile(categoryName); if (profile == null) { profile = new CategoryProfile(categoryName); _profiles.Add(profile); SimpleFileLogger.Log($"GenerateProfileAsync: Utworzono nowy obiekt profilu '{categoryName}' w pamięci."); } }
+            lock (_profiles)
+            {
+                profile = GetProfile(categoryName);
+                if (profile == null)
+                {
+                    profile = new CategoryProfile(categoryName);
+                    _profiles.Add(profile);
+                    SimpleFileLogger.Log($"GenerateProfileAsync: Utworzono nowy obiekt profilu '{categoryName}' w pamięci.");
+                }
+            }
 
             profile.UpdateCentroid(finalEmbeddingsForProfile, finalPathsForProfile.Any() ? finalPathsForProfile : validImageFileEntries.Select(e => e.FilePath).ToList());
             cancellationToken.ThrowIfCancellationRequested();
 
-            progress.Report(new ProgressReport { ProcessedItems = totalValidFiles, TotalItems = totalValidFiles, StatusMessage = "Zapisywanie profilu..." });
-            await SaveProfilesForModelAsync(modelName, cancellationToken);
-            SimpleFileLogger.LogHighLevelInfo($"GenerateProfileAsync: Zakończono dla kategorii '{categoryName}'. Profil zaktualizowany/utworzony i zapisany dla modelki '{modelName}'.");
-            progress.Report(new ProgressReport { ProcessedItems = totalValidFiles, TotalItems = totalValidFiles, StatusMessage = $"Profil '{categoryName}' gotowy." });
+            // USUNIĘTO: await SaveProfilesForModelAsync(modelName, cancellationToken);
+            // Zapis będzie realizowany przez MainWindowViewModel po zakończeniu operacji na modelu.
+            SimpleFileLogger.LogHighLevelInfo($"GenerateProfileAsync: Zakończono dla kategorii '{categoryName}'. Profil zaktualizowany/utworzony w PAMIĘCI dla modelki '{modelName}'.");
+            progress.Report(new ProgressReport { ProcessedItems = totalValidFiles, TotalItems = totalValidFiles, StatusMessage = $"Profil '{categoryName}' gotowy (w pamięci)." });
         }
 
         public async Task SaveProfilesForModelAsync(string modelName, CancellationToken cancellationToken = default)
@@ -351,7 +364,12 @@ namespace CosplayManager.Services
             string modelName = GetModelNameFromCategory(categoryName);
             cancellationToken.ThrowIfCancellationRequested();
             lock (_profiles) { profileToRemove = GetProfile(categoryName); if (profileToRemove != null) removedFromMemory = _profiles.Remove(profileToRemove); }
-            if (removedFromMemory && profileToRemove != null) { SimpleFileLogger.LogHighLevelInfo($"RemoveProfileAsync: Usunięto '{categoryName}' z pamięci."); await SaveProfilesForModelAsync(modelName, cancellationToken); return true; }
+            if (removedFromMemory && profileToRemove != null)
+            {
+                SimpleFileLogger.LogHighLevelInfo($"RemoveProfileAsync: Usunięto '{categoryName}' z pamięci. Zapisuję zmiany dla modelki '{modelName}'.");
+                await SaveProfilesForModelAsync(modelName, cancellationToken);
+                return true;
+            }
             SimpleFileLogger.Log($"RemoveProfileAsync: Nie znaleziono '{categoryName}'."); return false;
         }
 
@@ -362,9 +380,12 @@ namespace CosplayManager.Services
             SimpleFileLogger.LogHighLevelInfo($"RemoveAllProfilesForModelAsync: Próba usunięcia dla '{modelName}'.");
             int removedCount; lock (_profiles) { removedCount = _profiles.RemoveAll(p => GetModelNameFromCategory(p.CategoryName).Equals(modelName, StringComparison.OrdinalIgnoreCase)); }
             SimpleFileLogger.LogHighLevelInfo($"RemoveAllProfilesForModelAsync: Usunięto {removedCount} profili dla '{modelName}' z pamięci.");
-            string sanitizedModelName = SanitizeFileName(modelName); string modelProfilePath = Path.Combine(_profilesBaseFolderPath, $"{sanitizedModelName}.json");
-            await Task.Run(() => { object fileLock = _modelFileLocks.GetOrAdd(modelProfilePath, _ => new object()); lock (fileLock) { cancellationToken.ThrowIfCancellationRequested(); if (File.Exists(modelProfilePath)) { try { File.Delete(modelProfilePath); SimpleFileLogger.LogHighLevelInfo($"RemoveAllProfilesForModelAsync: Usunięto plik: {modelProfilePath}"); } catch (Exception ex) { SimpleFileLogger.LogError($"RemoveAllProfilesForModelAsync: Błąd usuwania pliku '{modelProfilePath}'.", ex); } } else { SimpleFileLogger.Log($"RemoveAllProfilesForModelAsync: Plik '{modelProfilePath}' nie istniał."); } } }, cancellationToken);
-            return removedCount > 0 || !File.Exists(modelProfilePath);
+
+            // Zapis polega na usunięciu pliku JSON dla modelki, jeśli nie ma już dla niej profili,
+            // lub zapisaniu pustej listy profili, co SaveProfilesForModelAsync powinno obsłużyć.
+            await SaveProfilesForModelAsync(modelName, cancellationToken);
+
+            return removedCount > 0;
         }
     }
 }
